@@ -90,3 +90,7 @@ cd app/frontend && npm run dev
 curl -s localhost:8000/strategies | jq '.server_keys, .strategies[0]'
 curl -s localhost:8000/trading/mode | jq .
 ```
+
+## Ops / Automation card
+
+Strategies page includes a read-only **Ops / Automation** card fed by `GET /api/automation/status` (no cron secret). Shows last cron paper-run id/status, monitor dry-run env flag, and last monitor actions from `/app/data/automation/`. Cron invoke endpoints remain under `/api/cron/*` and require `X-Swarm-Cron-Secret` — see [AUTOMATION_A1_A2.md](./AUTOMATION_A1_A2.md).

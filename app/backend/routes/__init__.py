@@ -12,6 +12,8 @@ from app.backend.routes.strategies import router as strategies_router
 from app.backend.routes.trading import router as trading_router
 from app.backend.routes.runs import router as runs_router
 from app.backend.routes.build_info import router as build_info_router
+from app.backend.routes.cron import router as cron_router
+from app.backend.routes.automation import router as automation_router
 
 # Main API router
 api_router = APIRouter()
@@ -27,8 +29,10 @@ api_router.include_router(language_models_router, tags=["language-models"])
 api_router.include_router(api_keys_router, tags=["api-keys"])
 api_router.include_router(build_info_router, tags=["build"])
 
-# Strategies UI / paper trading (also mounted under /api for direct + docs clarity)
+# Strategies UI / paper trading / cron automation (also under /api for proxy + docs)
 for _prefix in ("", "/api"):
     api_router.include_router(strategies_router, prefix=_prefix, tags=["strategies"])
     api_router.include_router(trading_router, prefix=_prefix, tags=["trading"])
     api_router.include_router(runs_router, prefix=_prefix, tags=["runs"])
+    api_router.include_router(cron_router, prefix=_prefix, tags=["cron"])
+    api_router.include_router(automation_router, prefix=_prefix, tags=["automation"])

@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import {
+  AutomationOpsStatus,
   PaperRunDecision,
   PaperRunStatusResponse,
   PortfolioOrder,
@@ -244,6 +245,8 @@ export function StrategiesPage() {
   const [closeSheetSymbols, setCloseSheetSymbols] = useState<string[]>([]);
 
   const [runHistory, setRunHistory] = useState<SessionRunHistoryItem[]>([]);
+  const [opsStatus, setOpsStatus] = useState<AutomationOpsStatus | null>(null);
+  const [opsLoading, setOpsLoading] = useState(false);
   const [stickyDismissed, setStickyDismissed] = useState(false);
 
   const analystStrategies = useMemo(
@@ -308,6 +311,19 @@ export function StrategiesPage() {
     }
   }, []);
 
+
+  const refreshOps = useCallback(async () => {
+    setOpsLoading(true);
+    try {
+      const s = await strategiesApi.getAutomationStatus();
+      setOpsStatus(s);
+    } catch {
+      setOpsStatus(null);
+    } finally {
+      setOpsLoading(false);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -338,7 +354,8 @@ export function StrategiesPage() {
   useEffect(() => {
     load();
     refreshPortfolio();
-  }, [load, refreshPortfolio]);
+    refreshOps();
+  }, [load, refreshPortfolio, refreshOps]);
 
   useEffect(() => {
     const active = run && !TERMINAL.has(run.status);
@@ -1169,6 +1186,95 @@ export function StrategiesPage() {
                   ))}
                 </ul>
               )}
+            </CardContent>
+          </Card>
+
+
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <CardTitle className="text-base">Ops / Automation</CardTitle>
+                  <CardDescription>
+                    Last cron paper-run and portfolio monitor (read-only). Paper-only; no secrets shown.
+                  </CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => refreshOps()}
+                  disabled={opsLoading}
+                >
+                  {opsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                  <span className="ml-1">Refresh</span>
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div className="flex flex-wrap gap-2 items-center">
+                <Badge variant="outline">paper-only</Badge>
+                <Badge variant={opsStatus?.monitor_dry_run_env !== false ? 'success' : 'warning'}>
+                  monitor dry_run env: {opsStatus?.monitor_dry_run_env === false ? 'false (hot allowed)' : 'true'}
+                </Badge>
+              </div>
+              <div className="rounded-lg border px-3 py-2 space-y-1">
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Last cron paper-run
+                </div>
+                {opsStatus?.last_paper_run?.run_id ? (
+                  <>
+                    <div className="font-mono text-xs break-all">{opsStatus.last_paper_run.run_id}</div>
+                    <div className="text-xs text-muted-foreground">
+                      status: <span className="capitalize">{opsStatus.last_paper_run.status || '—'}</span>
+                      {opsStatus.last_paper_run.mode ? ` · ${opsStatus.last_paper_run.mode}` : ''}
+                      {opsStatus.last_paper_run.created_at
+                        ? ` · ${new Date(opsStatus.last_paper_run.created_at).toLocaleString()}`
+                        : ''}
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No cron paper-run recorded yet.</p>
+                )}
+              </div>
+              <div className="rounded-lg border px-3 py-2 space-y-1">
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Last monitor actions
+                </div>
+                {opsStatus?.last_monitor ? (
+                  <>
+                    <div className="text-xs text-muted-foreground">
+                      {opsStatus.last_monitor.timestamp
+                        ? new Date(opsStatus.last_monitor.timestamp).toLocaleString()
+                        : '—'}
+                      {' · '}
+                      dry_run={String(opsStatus.last_monitor.dry_run ?? '—')}
+                      {opsStatus.last_monitor.trading_mode
+                        ? ` · ${opsStatus.last_monitor.trading_mode}`
+                        : ''}
+                      {typeof opsStatus.last_monitor.stops_triggered === 'number'
+                        ? ` · stops ${opsStatus.last_monitor.stops_triggered}`
+                        : ''}
+                    </div>
+                    {(opsStatus.last_monitor.actions || []).length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No would-sell / sell actions.</p>
+                    ) : (
+                      <ul className="space-y-1 max-h-40 overflow-auto">
+                        {(opsStatus.last_monitor.actions || []).slice(0, 12).map((a, i) => (
+                          <li key={i} className="text-xs font-mono truncate">
+                            {String(a.stop_type || a.action || 'action')}:{' '}
+                            {String(a.symbol || a.ticker || '?')}
+                            {a.dry_run ? ' [dry-run]' : ''}
+                            {a.reason ? ` — ${String(a.reason).slice(0, 80)}` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No monitor run recorded yet.</p>
+                )}
+              </div>
             </CardContent>
           </Card>
 

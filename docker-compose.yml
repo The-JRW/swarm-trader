@@ -6,7 +6,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    image: swarm-trader-backend:strategies-ux-8
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        IMAGE_TAG: strategies-ux-9
+    image: swarm-trader-backend:strategies-ux-9
     container_name: swarm-trader-backend
     restart: unless-stopped
     environment:
@@ -18,12 +21,14 @@ services:
       ALPACA_TRADING_MODE: ${ALPACA_TRADING_MODE:-paper}
       ALPACA_DATA_FEED: ${ALPACA_DATA_FEED:-sip}
       ALPACA_DATA_URL: ${ALPACA_DATA_URL:-https://data.alpaca.markets}
-      GIT_SHA: ${GIT_SHA:-}
-      IMAGE_TAG: strategies-ux-8
+      GIT_SHA: ${GIT_SHA:-unknown}
+      IMAGE_TAG: strategies-ux-9
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       TIINGO_API_KEY: ${TIINGO_API_KEY:-}
       ALPACA_API_KEY: ${ALPACA_API_KEY:-}
       ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
+      SWARM_CRON_SECRET: ${SWARM_CRON_SECRET:-}
+      SWARM_MONITOR_DRY_RUN: ${SWARM_MONITOR_DRY_RUN:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://swarm-master-u73408.vm.elestio.app}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
@@ -41,7 +46,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-    image: swarm-trader-frontend:strategies-ux-8
+    image: swarm-trader-frontend:strategies-ux-9
     container_name: swarm-trader-frontend
     restart: unless-stopped
     depends_on:

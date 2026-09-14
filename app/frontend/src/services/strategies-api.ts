@@ -176,6 +176,35 @@ export interface PortfolioCloseResponse {
   message?: string | null;
 }
 
+
+export interface AutomationOpsStatus {
+  paper_only: boolean;
+  monitor_dry_run_env: boolean;
+  updated_at?: string | null;
+  last_paper_run?: {
+    run_id?: string | null;
+    status?: string | null;
+    mode?: string | null;
+    tickers?: string[] | null;
+    execute_trades?: boolean | null;
+    created_at?: string | null;
+    message?: string | null;
+    store_note?: string | null;
+  } | null;
+  last_monitor?: {
+    timestamp?: string | null;
+    dry_run?: boolean | null;
+    trading_mode?: string | null;
+    positions_checked?: number | null;
+    stops_triggered?: number | null;
+    eod_flatten?: boolean | null;
+    actions?: Array<Record<string, unknown>> | null;
+    warnings?: string[] | null;
+    error?: string | null;
+  } | null;
+  paths?: Record<string, string> | null;
+}
+
 async function parseError(response: Response): Promise<string> {
   try {
     const data = await response.json();
@@ -290,4 +319,10 @@ export const strategiesApi = {
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();
   },
+  getAutomationStatus: async (): Promise<AutomationOpsStatus> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/status`);
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
 };
+

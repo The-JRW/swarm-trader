@@ -66,3 +66,11 @@ With `OPENROUTER_API_KEY` and the defaults above, agents use OpenRouter (`openai
 - Inject secrets via Elestio env UI (do not commit `.env`)
 - Expose **3000** (UI) and optionally **8000** (API) on the service
 - After changing `VITE_API_URL`, rebuild: `docker compose -f docker/docker-compose.prod.yml build frontend --no-cache`
+
+## Cron automation (A1/A2)
+
+See [AUTOMATION_A1_A2.md](./AUTOMATION_A1_A2.md).
+
+- Set `SWARM_CRON_SECRET` in Elestio (never commit a real value). See `ELESTIO_SWARM_CRON_SECRET.placeholder.md`.
+- Keep `SWARM_MONITOR_DRY_RUN=true` until dry-run week exit criteria are met.
+- Pass `GIT_SHA` at build/deploy so `/api/build-info` shows a real stamp (Dockerfile ARG + compose env).
