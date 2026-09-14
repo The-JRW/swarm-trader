@@ -1,4 +1,4 @@
-# Elestio / swarm-master — root entrypoint (same stack as docker/docker-compose.prod.yml)
+# Elestio / swarm-master — root entrypoint
 # UI :3000  API :8000
 
 services:
@@ -16,7 +16,13 @@ services:
       DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-OpenRouter}
       DEFAULT_LLM_MODEL: ${DEFAULT_LLM_MODEL:-openai/gpt-4o-mini}
       ALPACA_TRADING_MODE: ${ALPACA_TRADING_MODE:-paper}
-      CORS_ORIGINS: ${CORS_ORIGINS:-https://app-one-u73408.vm.elestio.app,http://localhost:3000}
+      ALPACA_DATA_FEED: ${ALPACA_DATA_FEED:-sip}
+      ALPACA_DATA_URL: ${ALPACA_DATA_URL:-https://data.alpaca.markets}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      TIINGO_API_KEY: ${TIINGO_API_KEY:-}
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://swarm-master-u73408.vm.elestio.app}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
@@ -34,7 +40,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-https://app-one-u73408.vm.elestio.app:8000}
+        VITE_API_URL: ${VITE_API_URL:-https://swarm-master-u73408.vm.elestio.app/api}
     image: swarm-trader-frontend:prod
     container_name: swarm-trader-frontend
     restart: unless-stopped
