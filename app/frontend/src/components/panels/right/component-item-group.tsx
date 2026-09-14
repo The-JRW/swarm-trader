@@ -5,6 +5,7 @@ import { useTabsContext } from '@/contexts/tabs-context';
 import { ComponentGroup } from '@/data/sidebar-components';
 import { flowService } from '@/services/flow-service';
 import { TabService } from '@/services/tab-service';
+import { useState } from 'react';
 import { toast } from 'sonner';
 
 interface ComponentItemGroupProps {
@@ -17,7 +18,6 @@ function waitForReactFlowMounted(timeoutMs = 4000): Promise<boolean> {
   return new Promise((resolve) => {
     const tick = () => {
       if (document.querySelector('.react-flow')) {
-        // Allow React Flow store + onNodesChange to register
         setTimeout(() => resolve(true), 75);
         return;
       }
@@ -38,6 +38,15 @@ export function ComponentItemGroup({
   const { name, icon: Icon, iconColor, items } = group;
   const { addComponentToFlow, enqueueComponentToAdd, flushPendingComponents } = useFlowContext();
   const { activeTabId, tabs, openTab, setActiveTab } = useTabsContext();
+  const [mountingItem, setMountingItem] = useState<string | null>(null);
+  const busy = mountingItem != null;
+
+  const currentFlowName = (): string => {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (tab?.type === 'flow' && tab.flow?.name) return tab.flow.name;
+    const existing = tabs.find((t) => t.type === 'flow' && t.flow);
+    return existing?.flow?.name || 'flow';
+  };
 
   const ensureActiveFlowCanvas = async (): Promise<boolean> => {
     if (activeTabId?.startsWith('flow-') && document.querySelector('.react-flow')) {
@@ -48,14 +57,12 @@ export function ComponentItemGroup({
       return waitForReactFlowMounted();
     }
 
-    // Prefer an already-open flow tab
     const existingFlowTab = tabs.find((t) => t.type === 'flow' && t.flow);
     if (existingFlowTab) {
       setActiveTab(existingFlowTab.id);
       return waitForReactFlowMounted();
     }
 
-    // Auto-create an empty flow so Components + buttons always work
     try {
       const newFlow = await flowService.createFlow({
         name: 'Untitled Flow',
@@ -76,17 +83,18 @@ export function ComponentItemGroup({
   };
 
   const handleItemClick = async (componentName: string) => {
+    if (busy) return;
+    setMountingItem(componentName);
     try {
       const flowActiveWithCanvas =
         !!activeTabId?.startsWith('flow-') && !!document.querySelector('.react-flow');
 
       if (flowActiveWithCanvas) {
         await addComponentToFlow(componentName);
+        toast.success(`Added ${componentName} to ${currentFlowName()}`);
         return;
       }
 
-      // Queue before opening/switching so FlowTabContent can flush AFTER loadFlow
-      // (avoids race where loadFlow overwrites a just-added node).
       const alreadyOnFlowTab = !!activeTabId?.startsWith('flow-');
       enqueueComponentToAdd(componentName);
       const ready = await ensureActiveFlowCanvas();
@@ -95,14 +103,15 @@ export function ComponentItemGroup({
         return;
       }
 
-      // Already on a flow tab: the load effect may not re-fire — flush now.
-      // Newly opened/switched tabs: FlowTabContent flushes after load (splice-safe).
       if (alreadyOnFlowTab) {
         await flushPendingComponents();
       }
+      toast.success(`Added ${componentName} to ${currentFlowName()}`);
     } catch (error) {
       console.error('Failed to add component to flow:', error);
-      toast.error(`Failed to add ${componentName}`);
+      toast.error(`Failed to add ${componentName}. Retry after the canvas finishes loading.`);
+    } finally {
+      setMountingItem(null);
     }
   };
 
@@ -122,6 +131,8 @@ export function ComponentItemGroup({
               icon={item.icon}
               label={item.name}
               isActive={activeItem === item.name}
+              disabled={busy && mountingItem !== item.name}
+              mounting={mountingItem === item.name}
               onClick={() => handleItemClick(item.name)}
             />
           ))}

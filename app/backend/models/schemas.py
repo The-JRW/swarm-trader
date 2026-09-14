@@ -521,6 +521,8 @@ class PeriodPerformanceMetric(BaseModel):
     pnl_pct: Optional[float] = None
     start_equity: Optional[float] = None
     end_equity: Optional[float] = None
+    # Only set when real SPY benchmark data exists — never invent zeros
+    spy_alpha: Optional[float] = None
 
 
 class PortfolioPerformanceResponse(BaseModel):
@@ -535,5 +537,7 @@ class PortfolioPerformanceResponse(BaseModel):
     quarter: PeriodPerformanceMetric = Field(default_factory=PeriodPerformanceMetric)
     ytd: PeriodPerformanceMetric = Field(default_factory=PeriodPerformanceMetric)
     message: Optional[str] = None
+    as_of: Optional[str] = None  # ISO timestamp of successful fetch
+    spy_alpha: Optional[float] = None  # omit unless real SPY data exists
 
 

@@ -59,6 +59,18 @@ If Alpaca keys are missing, `POST /runs/paper` returns **503** with a clear mess
 
 If `ALPACA_TRADING_MODE=live`, paper runs return **403**. Use Elestio env to keep paper until you intentionally go live.
 
+## Phase 3 wave 1 GUI (strategies-ux-8)
+
+- Strategy presets: Core / Value / Growth / Quant / Custom (see deliverable `SWARM_MASTER_PRESET_MEMBERSHIPS_t126u.md`).
+- Risk Manager + Portfolio Manager always-on chips (not optional checkboxes).
+- Auto mode shows resolved mode + honest reason (deterministic UI fallback; not live VIX).
+- Sticky thin run progress bar during active paper runs.
+- Slim close sheet (presets + confirm); no always-on inline triple % control.
+- Perf strip shows as-of timestamp; SPY α only when real data exists.
+- Settings pins OpenRouter + Tiingo; other LLM keys collapsed; no Alpaca trading paste.
+- Components toast “Added … to flow”; disable + while mounting.
+- Last-N session paper run history (clears on refresh).
+
 ## Implementation notes
 
 - Backend wraps `src.main.run_hedge_fund` / existing analyst graph + risk + portfolio manager.

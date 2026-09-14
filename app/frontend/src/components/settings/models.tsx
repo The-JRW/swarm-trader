@@ -29,9 +29,9 @@ export function Models({ className }: ModelsProps) {
     },
     {
       id: 'local',
-      label: 'Ollama',
+      label: 'Ollama (local only)',
       icon: Server,
-      description: 'Ollama models running locally on your machine',
+      description: 'Local Ollama — not used on this Elestio deploy; optional for local machines',
       component: OllamaSettings,
     },
   ];
@@ -49,7 +49,7 @@ export function Models({ className }: ModelsProps) {
       <div>
         <h2 className="text-xl font-semibold text-primary mb-2">Models</h2>
         <p className="text-sm text-muted-foreground">
-          Manage your AI models from local and cloud providers.
+          Cloud models (via OpenRouter) are primary for this deploy. Ollama is local-only and collapsed behind its own tab.
         </p>
       </div>
 
