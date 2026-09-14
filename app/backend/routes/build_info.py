@@ -5,11 +5,30 @@ import os
 
 router = APIRouter()
 
+_PLACEHOLDER_SHAS = {
+    "",
+    "unknown",
+    "fix-api-base",
+    "latest",
+    "dev",
+    "local",
+}
+
+
+def _resolve_git_sha() -> str:
+    """Prefer a real GIT_SHA from the environment over placeholder defaults."""
+    for key in ("GIT_SHA", "COMMIT_SHA", "SOURCE_VERSION", "ELASTIC_COMMIT", "VERCEL_GIT_COMMIT_SHA"):
+        val = (os.environ.get(key) or "").strip()
+        if val and val.lower() not in _PLACEHOLDER_SHAS:
+            return val
+    return "unknown"
+
+
 @router.get("/build-info")
 async def build_info():
     return {
         "service": "swarm-trader-backend",
-        "git_sha": os.environ.get("GIT_SHA", "unknown"),
+        "git_sha": _resolve_git_sha(),
         "image_tag": os.environ.get("IMAGE_TAG", "unknown"),
-        "features": ["strategies-ux", "alpaca-sip"],
+        "features": ["strategies-ux", "alpaca-sip", "api-keys-env-sync"],
     }

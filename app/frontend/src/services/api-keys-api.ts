@@ -1,5 +1,4 @@
 import { getApiBaseUrl } from '@/lib/api-base';
-const API_BASE_URL = getApiBaseUrl();
 
 export interface ApiKey {
   id: number;
@@ -41,15 +40,18 @@ export interface ApiKeyBulkUpdateRequest {
 }
 
 class ApiKeysService {
-  private baseUrl = `${API_BASE_URL}/api-keys`;
+  /** Resolve base URL per request — never cache at module load (SSR / https origin). */
+  private getBaseUrl(): string {
+    return `${getApiBaseUrl()}/api-keys`;
+  }
 
   async getAllApiKeys(includeInactive = false): Promise<ApiKeySummary[]> {
     const params = new URLSearchParams();
     if (includeInactive) {
       params.append('include_inactive', 'true');
     }
-    
-    const response = await fetch(`${this.baseUrl}?${params}`);
+
+    const response = await fetch(`${this.getBaseUrl()}?${params}`);
     if (!response.ok) {
       throw new Error(`Failed to fetch API keys: ${response.statusText}`);
     }
@@ -57,7 +59,7 @@ class ApiKeysService {
   }
 
   async getApiKey(provider: string): Promise<ApiKey> {
-    const response = await fetch(`${this.baseUrl}/${encodeURIComponent(provider)}`);
+    const response = await fetch(`${this.getBaseUrl()}/${encodeURIComponent(provider)}`);
     if (!response.ok) {
       if (response.status === 404) {
         throw new Error('API key not found');
@@ -68,14 +70,14 @@ class ApiKeysService {
   }
 
   async createOrUpdateApiKey(request: ApiKeyCreateRequest): Promise<ApiKey> {
-    const response = await fetch(this.baseUrl, {
+    const response = await fetch(this.getBaseUrl(), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(request),
     });
-    
+
     if (!response.ok) {
       throw new Error(`Failed to create/update API key: ${response.statusText}`);
     }
@@ -83,14 +85,14 @@ class ApiKeysService {
   }
 
   async updateApiKey(provider: string, request: ApiKeyUpdateRequest): Promise<ApiKey> {
-    const response = await fetch(`${this.baseUrl}/${encodeURIComponent(provider)}`, {
+    const response = await fetch(`${this.getBaseUrl()}/${encodeURIComponent(provider)}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(request),
     });
-    
+
     if (!response.ok) {
       if (response.status === 404) {
         throw new Error('API key not found');
@@ -101,10 +103,10 @@ class ApiKeysService {
   }
 
   async deleteApiKey(provider: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/${encodeURIComponent(provider)}`, {
+    const response = await fetch(`${this.getBaseUrl()}/${encodeURIComponent(provider)}`, {
       method: 'DELETE',
     });
-    
+
     if (!response.ok) {
       if (response.status === 404) {
         throw new Error('API key not found');
@@ -114,10 +116,10 @@ class ApiKeysService {
   }
 
   async deactivateApiKey(provider: string): Promise<ApiKeySummary> {
-    const response = await fetch(`${this.baseUrl}/${encodeURIComponent(provider)}/deactivate`, {
+    const response = await fetch(`${this.getBaseUrl()}/${encodeURIComponent(provider)}/deactivate`, {
       method: 'PATCH',
     });
-    
+
     if (!response.ok) {
       if (response.status === 404) {
         throw new Error('API key not found');
@@ -128,14 +130,14 @@ class ApiKeysService {
   }
 
   async bulkUpdateApiKeys(request: ApiKeyBulkUpdateRequest): Promise<ApiKey[]> {
-    const response = await fetch(`${this.baseUrl}/bulk`, {
+    const response = await fetch(`${this.getBaseUrl()}/bulk`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(request),
     });
-    
+
     if (!response.ok) {
       throw new Error(`Failed to bulk update API keys: ${response.statusText}`);
     }
@@ -143,10 +145,10 @@ class ApiKeysService {
   }
 
   async updateLastUsed(provider: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/${encodeURIComponent(provider)}/last-used`, {
+    const response = await fetch(`${this.getBaseUrl()}/${encodeURIComponent(provider)}/last-used`, {
       method: 'PATCH',
     });
-    
+
     if (!response.ok) {
       if (response.status === 404) {
         throw new Error('API key not found');
@@ -156,4 +158,4 @@ class ApiKeysService {
   }
 }
 
-export const apiKeysService = new ApiKeysService(); 
+export const apiKeysService = new ApiKeysService();

@@ -1,8 +1,6 @@
 import { getApiBaseUrl } from '@/lib/api-base';
 import { Flow } from '@/types/flow';
 
-const API_BASE_URL = getApiBaseUrl();
-
 export interface CreateFlowRequest {
   name: string;
   description?: string;
@@ -28,7 +26,7 @@ export interface UpdateFlowRequest {
 export const flowService = {
   // Get all flows
   async getFlows(): Promise<Flow[]> {
-    const response = await fetch(`${API_BASE_URL}/flows/`);
+    const response = await fetch(`${getApiBaseUrl()}/flows/`);
     if (!response.ok) {
       throw new Error('Failed to fetch flows');
     }
@@ -37,7 +35,7 @@ export const flowService = {
 
   // Get a specific flow
   async getFlow(id: number): Promise<Flow> {
-    const response = await fetch(`${API_BASE_URL}/flows/${id}`);
+    const response = await fetch(`${getApiBaseUrl()}/flows/${id}`);
     if (!response.ok) {
       throw new Error('Failed to fetch flow');
     }
@@ -46,7 +44,7 @@ export const flowService = {
 
   // Create a new flow
   async createFlow(data: CreateFlowRequest): Promise<Flow> {
-    const response = await fetch(`${API_BASE_URL}/flows/`, {
+    const response = await fetch(`${getApiBaseUrl()}/flows/`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -61,7 +59,7 @@ export const flowService = {
 
   // Update an existing flow
   async updateFlow(id: number, data: UpdateFlowRequest): Promise<Flow> {
-    const response = await fetch(`${API_BASE_URL}/flows/${id}`, {
+    const response = await fetch(`${getApiBaseUrl()}/flows/${id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -76,7 +74,7 @@ export const flowService = {
 
   // Delete a flow
   async deleteFlow(id: number): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/flows/${id}`, {
+    const response = await fetch(`${getApiBaseUrl()}/flows/${id}`, {
       method: 'DELETE',
     });
     if (!response.ok) {
@@ -86,7 +84,7 @@ export const flowService = {
 
   // Duplicate a flow
   async duplicateFlow(id: number, newName?: string): Promise<Flow> {
-    const url = `${API_BASE_URL}/flows/${id}/duplicate${newName ? `?new_name=${encodeURIComponent(newName)}` : ''}`;
+    const url = `${getApiBaseUrl()}/flows/${id}/duplicate${newName ? `?new_name=${encodeURIComponent(newName)}` : ''}`;
     const response = await fetch(url, {
       method: 'POST',
     });

@@ -41,7 +41,19 @@ app.include_router(api_router)
 
 @app.on_event("startup")
 async def startup_event():
-    """Startup event to check Ollama availability."""
+    """Startup: sync env API keys into DB, then check Ollama availability."""
+    try:
+        from app.backend.database.connection import SessionLocal
+        from app.backend.services.api_key_service import ApiKeyService
+
+        db = SessionLocal()
+        try:
+            ApiKeyService(db).sync_env_api_keys()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("Could not sync env API keys into store: %s", e)
+
     try:
         logger.info("Checking Ollama availability...")
         status = await ollama_service.check_ollama_status()
