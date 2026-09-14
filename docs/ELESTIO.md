@@ -31,9 +31,11 @@ Set `CORS_ORIGINS` to your UI origin(s), comma-separated.
 | `OPENROUTER_API_KEY` | Recommended | Default cloud LLM provider |
 | `DEFAULT_LLM_PROVIDER` | Recommended | Default: `OpenRouter` |
 | `DEFAULT_LLM_MODEL` | Recommended | Default: `openai/gpt-4o-mini` |
-| `TIINGO_API_KEY` | Recommended | Primary price source when set; else yfinance |
-| `ALPACA_API_KEY` | For trading | Swing / primary account |
-| `ALPACA_API_SECRET` | For trading | Swing / primary account |
+| `ALPACA_API_KEY` | For trading + data | Swing / primary account; also SIP market data |
+| `ALPACA_API_SECRET` | For trading + data | Swing / primary account; also SIP market data |
+| `ALPACA_DATA_FEED` | Recommended | `sip` (default), `iex`, or `delayed_sip`. Recent SIP needs Algo Trader Plus |
+| `ALPACA_DATA_URL` | Optional | Default `https://data.alpaca.markets` |
+| `TIINGO_API_KEY` | Recommended | Fallback prices after Alpaca SIP; else yfinance |
 | `ALPACA_TRADING_MODE` | Safety | `paper` (default) or `live` |
 | `ALPACA_BASE_URL` | Optional | Overrides mode; paper vs live REST base |
 | `ALPACA_DAY_API_KEY` / `ALPACA_DAY_API_SECRET` | Optional | Separate day-trading account |
@@ -48,10 +50,11 @@ Setting `ALPACA_TRADING_MODE=live` (or pointing `ALPACA_BASE_URL` at `https://ap
 
 ## Market data
 
-1. If `TIINGO_API_KEY` is set → prices from Tiingo (daily, IEX fallback)
-2. Else → yfinance (+ SEC EDGAR for fundamentals / filings)
+1. If `ALPACA_API_KEY` + `ALPACA_API_SECRET` are set and `ALPACA_DATA_FEED` is `sip` (or unset, default `sip`) → Alpaca SIP bars
+2. Else if `TIINGO_API_KEY` is set → prices from Tiingo (daily, IEX fallback)
+3. Else → yfinance (+ SEC EDGAR for fundamentals / filings)
 
-Free fallbacks are never removed.
+**Algo Trader Plus** is required for recent SIP market data. Free fallbacks (Tiingo when keyed, yfinance/SEC) are never removed. Trading remains paper unless `ALPACA_TRADING_MODE=live` — data feed settings do not change order routing.
 
 ## LLM
 

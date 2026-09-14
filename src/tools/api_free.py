@@ -1,6 +1,7 @@
 """
 Drop-in replacement for api.py using free public data sources.
-- Prices: Tiingo (when TIINGO_API_KEY set), else yfinance
+- Prices: Alpaca SIP (when ALPACA_API_KEY+SECRET set and ALPACA_DATA_FEED=sip/default)
+  → Tiingo (when TIINGO_API_KEY set) → yfinance
 - Financial metrics: SEC EDGAR XBRL companyfacts + yfinance
 - Line items: SEC EDGAR XBRL companyfacts
 - Insider trades: SEC EDGAR Form 4 RSS
@@ -8,7 +9,8 @@ Drop-in replacement for api.py using free public data sources.
 - Company facts / market cap: yfinance .info + SEC EDGAR
 - File-based JSON cache with TTLs
 
-Paid Tiingo key is optional; yfinance/SEC remain as free fallbacks.
+Alpaca SIP requires Algo Trader Plus for recent data. Tiingo is optional;
+yfinance/SEC remain as free fallbacks. Trading mode (paper/live) is separate.
 """
 
 import datetime
@@ -191,7 +193,12 @@ def _extract_xbrl_values(facts: dict, concept: str, namespace: str = "us-gaap", 
 
 
 def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None) -> list[Price]:
-    """Fetch price data — Tiingo first when TIINGO_API_KEY is set, else yfinance."""
+    """Fetch price data — Alpaca SIP (when configured) → Tiingo → yfinance.
+
+    Alpaca SIP is used when ALPACA_API_KEY and ALPACA_API_SECRET are set and
+    ALPACA_DATA_FEED is sip or unset (default sip). Requires Algo Trader Plus
+    for recent SIP. Trading remains paper unless ALPACA_TRADING_MODE=live.
+    """
     cache_key = f"{ticker}_{start_date}_{end_date}"
 
     if cached_data := _cache.get_prices(cache_key):
@@ -202,6 +209,19 @@ def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None)
     if disk:
         _cache.set_prices(cache_key, disk)
         return [Price(**p) for p in disk]
+
+    # Prefer Alpaca SIP when keys set and feed is sip (default)
+    try:
+        from src.tools.alpaca_data import get_prices as alpaca_get_prices, alpaca_sip_preferred
+
+        if alpaca_sip_preferred():
+            alpaca_prices = alpaca_get_prices(ticker, start_date, end_date)
+            if alpaca_prices:
+                _cache.set_prices(cache_key, alpaca_prices)
+                _disk_cache_set("prices", cache_key, alpaca_prices)
+                return [Price(**p) for p in alpaca_prices]
+    except Exception as e:
+        print(f"[api_free] Alpaca get_prices fallback for {ticker}: {e}")
 
     # Prefer Tiingo when configured
     try:
