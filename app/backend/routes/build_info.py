@@ -16,7 +16,11 @@ _PLACEHOLDER_SHAS = {
 
 
 def _resolve_git_sha() -> str:
-    """Prefer a real GIT_SHA from the environment over placeholder defaults."""
+    """Prefer a real GIT_SHA from the environment over placeholder defaults.
+
+    Dockerfile.backend bakes ARG GIT_SHA into ENV at image build time; compose
+    may also inject GIT_SHA at runtime. Empty / placeholder values → "unknown".
+    """
     for key in ("GIT_SHA", "COMMIT_SHA", "SOURCE_VERSION", "ELASTIC_COMMIT", "VERCEL_GIT_COMMIT_SHA"):
         val = (os.environ.get(key) or "").strip()
         if val and val.lower() not in _PLACEHOLDER_SHAS:
@@ -30,5 +34,14 @@ async def build_info():
         "service": "swarm-trader-backend",
         "git_sha": _resolve_git_sha(),
         "image_tag": os.environ.get("IMAGE_TAG", "unknown"),
-        "features": ["strategies-ux", "alpaca-sip", "api-keys-env-sync", "perf-dashboard", "components-click-add", "orders-closing-pnl", "phase3-gui-wave1"],
+        "features": [
+            "strategies-ux",
+            "alpaca-sip",
+            "api-keys-env-sync",
+            "perf-dashboard",
+            "components-click-add",
+            "orders-closing-pnl",
+            "phase3-gui-wave1",
+            "a1-a2-automation",
+        ],
     }

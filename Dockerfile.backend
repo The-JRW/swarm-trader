@@ -2,10 +2,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+ARG GIT_SHA=unknown
+ARG IMAGE_TAG=strategies-ux-9
+
 ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
     POETRY_VIRTUALENVS_CREATE=false \
-    POETRY_NO_INTERACTION=1
+    POETRY_NO_INTERACTION=1 \
+    GIT_SHA=${GIT_SHA} \
+    IMAGE_TAG=${IMAGE_TAG}
 
 RUN pip install --no-cache-dir poetry==1.7.1
 
