@@ -11,6 +11,7 @@ from app.backend.routes.api_keys import router as api_keys_router
 from app.backend.routes.strategies import router as strategies_router
 from app.backend.routes.trading import router as trading_router
 from app.backend.routes.runs import router as runs_router
+from app.backend.routes.build_info import router as build_info_router
 
 # Main API router
 api_router = APIRouter()
@@ -24,6 +25,7 @@ api_router.include_router(flow_runs_router, tags=["flow-runs"])
 api_router.include_router(ollama_router, tags=["ollama"])
 api_router.include_router(language_models_router, tags=["language-models"])
 api_router.include_router(api_keys_router, tags=["api-keys"])
+api_router.include_router(build_info_router, tags=["build"])
 
 # Strategies UI / paper trading (also mounted under /api for direct + docs clarity)
 for _prefix in ("", "/api"):
