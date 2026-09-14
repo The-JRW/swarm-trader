@@ -1,10 +1,11 @@
 import { Settings } from '@/components/settings/settings';
+import { StrategiesPage } from '@/components/strategies/strategies-page';
 import { FlowTabContent } from '@/components/tabs/flow-tab-content';
 import { Flow } from '@/types/flow';
 import { ReactNode, createElement } from 'react';
 
 export interface TabData {
-  type: 'flow' | 'settings';
+  type: 'flow' | 'settings' | 'strategies';
   title: string;
   flow?: Flow;
   metadata?: Record<string, any>;
@@ -21,9 +22,12 @@ export class TabService {
       
       case 'settings':
         return createElement(Settings);
+
+      case 'strategies':
+        return createElement(StrategiesPage);
       
       default:
-        throw new Error(`Unsupported tab type: ${tabData.type}`);
+        throw new Error(`Unsupported tab type: ${(tabData as TabData).type}`);
     }
   }
 
@@ -44,6 +48,14 @@ export class TabService {
     };
   }
 
+  static createStrategiesTab(): TabData & { content: ReactNode } {
+    return {
+      type: 'strategies',
+      title: 'Strategies',
+      content: TabService.createTabContent({ type: 'strategies', title: 'Strategies' }),
+    };
+  }
+
   // Restore tab content for persisted tabs (used when loading from localStorage)
   static restoreTabContent(tabData: TabData): ReactNode {
     return TabService.createTabContent(tabData);
@@ -60,9 +72,12 @@ export class TabService {
       
       case 'settings':
         return TabService.createSettingsTab();
+
+      case 'strategies':
+        return TabService.createStrategiesTab();
       
       default:
-        throw new Error(`Cannot restore unsupported tab type: ${savedTab.type}`);
+        throw new Error(`Cannot restore unsupported tab type: ${(savedTab as TabData).type}`);
     }
   }
-} 
+}
