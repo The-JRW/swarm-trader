@@ -1,3 +1,4 @@
+import { getApiBaseUrl } from '@/lib/api-base';
 import { NodeStatus, OutputNodeData, useNodeContext } from '@/contexts/node-context';
 import { Agent } from '@/data/agents';
 import { LanguageModel } from '@/data/models';
@@ -7,7 +8,7 @@ import {
   HedgeFundRequest
 } from '@/services/types';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE_URL = getApiBaseUrl();
 
 export const api = {
   /**

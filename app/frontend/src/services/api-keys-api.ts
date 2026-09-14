@@ -1,4 +1,5 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+import { getApiBaseUrl } from '@/lib/api-base';
+const API_BASE_URL = getApiBaseUrl();
 
 export interface ApiKey {
   id: number;

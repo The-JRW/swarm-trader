@@ -3,7 +3,9 @@
  * Uses server env keys — never send Alpaca secrets from the browser.
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+import { getApiBaseUrl } from '@/lib/api-base';
+
+const API_BASE_URL = getApiBaseUrl();
 
 export type StrategyCategory = 'analyst' | 'risk' | 'pm';
 
