@@ -95,6 +95,8 @@ export interface PeriodPerformanceMetric {
   pnl_pct?: number | null;
   start_equity?: number | null;
   end_equity?: number | null;
+  /** SPY alpha for this period — only present when backend has real benchmark data */
+  spy_alpha?: number | null;
 }
 
 export interface PortfolioPerformance {
@@ -108,6 +110,10 @@ export interface PortfolioPerformance {
   quarter: PeriodPerformanceMetric;
   ytd: PeriodPerformanceMetric;
   message?: string | null;
+  /** ISO timestamp of last successful performance fetch (server clock) */
+  as_of?: string | null;
+  /** Overall SPY alpha when real data exists; omit/null otherwise — never fake zeros */
+  spy_alpha?: number | null;
 }
 
 export interface PortfolioOrder {

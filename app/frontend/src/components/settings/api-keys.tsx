@@ -2,7 +2,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { apiKeysService } from '@/services/api-keys-api';
-import { Eye, EyeOff, Key, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Eye, EyeOff, Key, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 interface ApiKeyDef {
@@ -11,77 +11,84 @@ interface ApiKeyDef {
   description: string;
   url: string;
   placeholder: string;
+  recommended?: boolean;
 }
 
 const MASKED_PLACEHOLDER = '••••••••••••••••';
 
-const FINANCIAL_API_KEYS: ApiKeyDef[] = [
+/** Pinned recommended providers for this deploy (OpenRouter + Tiingo). */
+const PINNED_KEYS: ApiKeyDef[] = [
+  {
+    key: 'OPENROUTER_API_KEY',
+    label: 'OpenRouter API',
+    description: 'Primary LLM provider for this deploy (gpt-4o-mini and other OpenRouter models)',
+    url: 'https://openrouter.ai/',
+    placeholder: 'your-openrouter-api-key',
+    recommended: true,
+  },
   {
     key: 'TIINGO_API_KEY',
     label: 'Tiingo API',
     description: 'Secondary market data (Alpaca SIP is primary via server env)',
     url: 'https://www.tiingo.com/',
-    placeholder: 'your-tiingo-api-key'
+    placeholder: 'your-tiingo-api-key',
+    recommended: true,
   },
-  {
-    key: 'FINANCIAL_DATASETS_API_KEY',
-    label: 'Financial Datasets API',
-    description: 'Legacy financial data API (optional; free yfinance/SEC fallbacks exist)',
-    url: 'https://financialdatasets.ai/',
-    placeholder: 'your-financial-datasets-api-key'
-  }
 ];
 
-const LLM_API_KEYS: ApiKeyDef[] = [
-  {
-    key: 'OPENROUTER_API_KEY',
-    label: 'OpenRouter API',
-    description: 'Primary LLM provider (gpt-4o-mini and other OpenRouter models)',
-    url: 'https://openrouter.ai/',
-    placeholder: 'your-openrouter-api-key'
-  },
+const OTHER_LLM_KEYS: ApiKeyDef[] = [
   {
     key: 'ANTHROPIC_API_KEY',
     label: 'Anthropic API',
     description: 'For Claude models (claude-4-sonnet, claude-4.1-opus, etc.)',
     url: 'https://anthropic.com/',
-    placeholder: 'your-anthropic-api-key'
+    placeholder: 'your-anthropic-api-key',
   },
   {
     key: 'DEEPSEEK_API_KEY',
     label: 'DeepSeek API',
     description: 'For DeepSeek models (deepseek-chat, deepseek-reasoner, etc.)',
     url: 'https://deepseek.com/',
-    placeholder: 'your-deepseek-api-key'
+    placeholder: 'your-deepseek-api-key',
   },
   {
     key: 'GROQ_API_KEY',
     label: 'Groq API',
     description: 'For Groq-hosted models (deepseek, llama3, etc.)',
     url: 'https://groq.com/',
-    placeholder: 'your-groq-api-key'
+    placeholder: 'your-groq-api-key',
   },
   {
     key: 'GOOGLE_API_KEY',
     label: 'Google API',
     description: 'For Gemini models (gemini-2.5-flash, gemini-2.5-pro)',
     url: 'https://ai.dev/',
-    placeholder: 'your-google-api-key'
+    placeholder: 'your-google-api-key',
   },
   {
     key: 'OPENAI_API_KEY',
     label: 'OpenAI API',
     description: 'For OpenAI models (gpt-4o, gpt-4o-mini, etc.)',
     url: 'https://platform.openai.com/',
-    placeholder: 'your-openai-api-key'
+    placeholder: 'your-openai-api-key',
   },
   {
     key: 'GIGACHAT_API_KEY',
     label: 'GigaChat API',
     description: 'For GigaChat models (GigaChat-2-Max, etc.)',
     url: 'https://github.com/ai-forever/gigachat',
-    placeholder: 'your-gigachat-api-key'
-  }
+    placeholder: 'your-gigachat-api-key',
+  },
+];
+
+const OTHER_DATA_KEYS: ApiKeyDef[] = [
+  {
+    key: 'FINANCIAL_DATASETS_API_KEY',
+    label: 'Financial Datasets API',
+    description: 'Legacy financial data API (optional; free yfinance/SEC fallbacks exist)',
+    url: 'https://financialdatasets.ai/',
+    placeholder: 'your-financial-datasets-api-key',
+  },
 ];
 
 export function ApiKeysSettings() {
@@ -93,19 +100,18 @@ export function ApiKeysSettings() {
   const [revealing, setRevealing] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [othersOpen, setOthersOpen] = useState(false);
 
   const loadApiKeys = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      // Summaries only — do not fetch full secrets on load
       const apiKeysSummary = await apiKeysService.getAllApiKeys();
       const configuredMap: Record<string, boolean> = {};
       for (const summary of apiKeysSummary) {
         configuredMap[summary.provider] = Boolean(summary.has_key);
       }
       setConfigured(configuredMap);
-      // Clear any previously revealed values after a refresh
       setApiKeys({});
       setVisibleKeys({});
     } catch (err) {
@@ -121,9 +127,9 @@ export function ApiKeysSettings() {
   }, [loadApiKeys]);
 
   const handleKeyChange = async (key: string, value: string) => {
-    setApiKeys(prev => ({
+    setApiKeys((prev) => ({
       ...prev,
-      [key]: value
+      [key]: value,
     }));
 
     try {
@@ -131,9 +137,9 @@ export function ApiKeysSettings() {
         await apiKeysService.createOrUpdateApiKey({
           provider: key,
           key_value: value.trim(),
-          is_active: true
+          is_active: true,
         });
-        setConfigured(prev => ({ ...prev, [key]: true }));
+        setConfigured((prev) => ({ ...prev, [key]: true }));
         setError(null);
       } else {
         try {
@@ -141,7 +147,7 @@ export function ApiKeysSettings() {
         } catch {
           // Key might not exist
         }
-        setConfigured(prev => {
+        setConfigured((prev) => {
           const next = { ...prev };
           delete next[key];
           return next;
@@ -157,17 +163,16 @@ export function ApiKeysSettings() {
     const willShow = !visibleKeys[key];
 
     if (willShow && configured[key] && !apiKeys[key]) {
-      // Fetch full key only on reveal
       try {
-        setRevealing(prev => ({ ...prev, [key]: true }));
+        setRevealing((prev) => ({ ...prev, [key]: true }));
         const fullKey = await apiKeysService.getApiKey(key);
-        setApiKeys(prev => ({ ...prev, [key]: fullKey.key_value }));
+        setApiKeys((prev) => ({ ...prev, [key]: fullKey.key_value }));
       } catch (err) {
         console.error(`Failed to reveal API key ${key}:`, err);
         setError(`Could not reveal ${key}. Retry or re-enter the key.`);
         return;
       } finally {
-        setRevealing(prev => {
+        setRevealing((prev) => {
           const next = { ...prev };
           delete next[key];
           return next;
@@ -175,26 +180,26 @@ export function ApiKeysSettings() {
       }
     }
 
-    setVisibleKeys(prev => ({
+    setVisibleKeys((prev) => ({
       ...prev,
-      [key]: willShow
+      [key]: willShow,
     }));
   };
 
   const clearKey = async (key: string) => {
     try {
       await apiKeysService.deleteApiKey(key);
-      setApiKeys(prev => {
+      setApiKeys((prev) => {
         const newKeys = { ...prev };
         delete newKeys[key];
         return newKeys;
       });
-      setConfigured(prev => {
+      setConfigured((prev) => {
         const next = { ...prev };
         delete next[key];
         return next;
       });
-      setVisibleKeys(prev => {
+      setVisibleKeys((prev) => {
         const next = { ...prev };
         delete next[key];
         return next;
@@ -211,78 +216,65 @@ export function ApiKeysSettings() {
     return '';
   };
 
-  const renderApiKeySection = (title: string, description: string, keys: ApiKeyDef[], icon: React.ReactNode) => (
-    <Card className="bg-panel border-gray-700 dark:border-gray-700">
-      <CardHeader>
-        <CardTitle className="text-lg font-medium text-primary flex items-center gap-2">
-          {icon}
-          {title}
-        </CardTitle>
-        <p className="text-sm text-muted-foreground">{description}</p>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {keys.map((apiKey) => (
-          <div key={apiKey.key} className="space-y-2">
-            <div className="flex items-center gap-2">
-              <button
-                className="text-sm font-medium text-primary hover:text-blue-500 cursor-pointer transition-colors text-left"
-                onClick={() => window.open(apiKey.url, '_blank')}
-              >
-                {apiKey.label}
-              </button>
-              {configured[apiKey.key] && (
-                <span className="text-[10px] uppercase tracking-wide text-emerald-500/90 border border-emerald-500/30 rounded px-1.5 py-0.5">
-                  Configured
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">{apiKey.description}</p>
-            <div className="relative">
-              <Input
-                type={visibleKeys[apiKey.key] ? 'text' : 'password'}
-                placeholder={apiKey.placeholder}
-                value={inputValue(apiKey.key)}
-                disabled={revealing[apiKey.key]}
-                onFocus={() => {
-                  // Allow replacing a masked configured key without revealing first
-                  if (configured[apiKey.key] && apiKeys[apiKey.key] === undefined) {
-                    setApiKeys(prev => ({ ...prev, [apiKey.key]: '' }));
-                    setVisibleKeys(prev => ({ ...prev, [apiKey.key]: true }));
-                  }
-                }}
-                onChange={(e) => handleKeyChange(apiKey.key, e.target.value)}
-                className="pr-20"
-              />
-              <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                {(configured[apiKey.key] || apiKeys[apiKey.key]) && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 hover:bg-red-500/10 hover:text-red-500"
-                    onClick={() => clearKey(apiKey.key)}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  disabled={revealing[apiKey.key]}
-                  onClick={() => toggleKeyVisibility(apiKey.key)}
-                >
-                  {visibleKeys[apiKey.key] ? (
-                    <EyeOff className="h-3 w-3" />
-                  ) : (
-                    <Eye className="h-3 w-3" />
-                  )}
-                </Button>
-              </div>
-            </div>
-          </div>
-        ))}
-      </CardContent>
-    </Card>
+  const renderKeyRow = (apiKey: ApiKeyDef) => (
+    <div key={apiKey.key} className="space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          className="text-sm font-medium text-primary hover:text-blue-500 cursor-pointer transition-colors text-left"
+          onClick={() => window.open(apiKey.url, '_blank')}
+        >
+          {apiKey.label}
+        </button>
+        {apiKey.recommended && (
+          <span className="text-[10px] uppercase tracking-wide text-blue-400/90 border border-blue-500/30 rounded px-1.5 py-0.5">
+            Recommended
+          </span>
+        )}
+        {configured[apiKey.key] && (
+          <span className="text-[10px] uppercase tracking-wide text-emerald-500/90 border border-emerald-500/30 rounded px-1.5 py-0.5">
+            Configured
+          </span>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">{apiKey.description}</p>
+      <div className="relative">
+        <Input
+          type={visibleKeys[apiKey.key] ? 'text' : 'password'}
+          placeholder={apiKey.placeholder}
+          value={inputValue(apiKey.key)}
+          disabled={revealing[apiKey.key]}
+          onFocus={() => {
+            if (configured[apiKey.key] && apiKeys[apiKey.key] === undefined) {
+              setApiKeys((prev) => ({ ...prev, [apiKey.key]: '' }));
+              setVisibleKeys((prev) => ({ ...prev, [apiKey.key]: true }));
+            }
+          }}
+          onChange={(e) => handleKeyChange(apiKey.key, e.target.value)}
+          className="pr-20"
+        />
+        <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1">
+          {(configured[apiKey.key] || apiKeys[apiKey.key]) && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 hover:bg-red-500/10 hover:text-red-500"
+              onClick={() => clearKey(apiKey.key)}
+            >
+              <Trash2 className="h-3 w-3" />
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            disabled={revealing[apiKey.key]}
+            onClick={() => toggleKeyVisibility(apiKey.key)}
+          >
+            {visibleKeys[apiKey.key] ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 
   return (
@@ -290,9 +282,8 @@ export function ApiKeysSettings() {
       <div>
         <h2 className="text-xl font-semibold text-primary mb-2">API Keys</h2>
         <p className="text-sm text-muted-foreground">
-          Configure API credentials for language models and market data.
-          OpenRouter is the primary LLM; Tiingo is secondary data (Alpaca SIP is primary via server env).
-          Alpaca trading keys stay in server environment (paper only) and are not managed here.
+          Configure LLM and market-data credentials. OpenRouter + Tiingo are pinned for this deploy.
+          Alpaca trading keys stay in server environment (paper only) and are not pasteable here.
           Changes are automatically saved.
           {loading ? ' Loading key status…' : ''}
         </p>
@@ -323,19 +314,65 @@ export function ApiKeysSettings() {
         </Card>
       )}
 
-      {renderApiKeySection(
-        'Financial Data',
-        'Tiingo is secondary market data. Alpaca SIP (primary prices) and Alpaca trading keys are server-env paper only — not editable here.',
-        FINANCIAL_API_KEYS,
-        <Key className="h-4 w-4" />
-      )}
+      <Card className="bg-panel border-blue-500/30">
+        <CardHeader>
+          <CardTitle className="text-lg font-medium text-primary flex items-center gap-2">
+            <Key className="h-4 w-4" />
+            Recommended for this deploy
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            OpenRouter (primary LLM) and Tiingo (secondary data). Alpaca SIP prices use server env.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">{PINNED_KEYS.map(renderKeyRow)}</CardContent>
+      </Card>
 
-      {renderApiKeySection(
-        'Language Models',
-        'OpenRouter is the primary LLM provider. Other keys are optional fallbacks.',
-        LLM_API_KEYS,
-        <Key className="h-4 w-4" />
-      )}
+      <Card className="bg-panel border-gray-700 dark:border-gray-700">
+        <CardHeader className="pb-2">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between text-left"
+            onClick={() => setOthersOpen((o) => !o)}
+            aria-expanded={othersOpen}
+          >
+            <div>
+              <CardTitle className="text-lg font-medium text-primary flex items-center gap-2">
+                {othersOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                Other providers
+              </CardTitle>
+              <p className="text-sm text-muted-foreground mt-1">
+                Optional LLM fallbacks and legacy data APIs. Expand to configure.
+              </p>
+            </div>
+            <span className="text-xs text-muted-foreground shrink-0">
+              {othersOpen ? 'Collapse' : 'Expand'}
+            </span>
+          </button>
+        </CardHeader>
+        {othersOpen && (
+          <CardContent className="space-y-4 pt-2">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">Language models</div>
+            {OTHER_LLM_KEYS.map(renderKeyRow)}
+            <div className="text-xs uppercase tracking-wide text-muted-foreground pt-2">Market data</div>
+            {OTHER_DATA_KEYS.map(renderKeyRow)}
+          </CardContent>
+        )}
+      </Card>
+
+      <Card className="bg-ramp-grey-800/20 border-ramp-grey-700">
+        <CardContent className="p-4">
+          <div className="flex items-start gap-3">
+            <Key className="h-5 w-5 text-muted-foreground mt-0.5 flex-shrink-0" />
+            <div className="space-y-1">
+              <h4 className="text-sm font-medium text-primary">Alpaca trading keys</h4>
+              <p className="text-xs text-muted-foreground">
+                Using server keys (paper only). Trading secrets are not editable or pasteable in this UI.
+                Settings keys above are for LLM / data providers only.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card className="bg-amber-500/5 border-amber-500/20">
         <CardContent className="p-4">
@@ -345,7 +382,8 @@ export function ApiKeysSettings() {
               <h4 className="text-sm font-medium text-amber-500">Security Note</h4>
               <p className="text-xs text-muted-foreground">
                 Keys shown here are stored on the server. Full values are fetched only when you reveal them.
-                Alpaca trading credentials remain in the deployment environment (paper trading only) and are never shown in this UI.
+                Alpaca trading credentials remain in the deployment environment (paper trading only) and are
+                never shown in this UI.
               </p>
             </div>
           </div>

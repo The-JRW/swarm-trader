@@ -623,6 +623,8 @@ async def portfolio_performance():
             mtd=mtd,
             quarter=quarter,
             ytd=ytd,
+            as_of=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            # spy_alpha omitted until real SPY benchmark data is wired (never fake)
         )
     except Exception as e:
         return PortfolioPerformanceResponse(

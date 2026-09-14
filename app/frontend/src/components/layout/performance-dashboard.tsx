@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
   PeriodPerformanceMetric,
@@ -6,7 +7,6 @@ import {
 } from '@/services/strategies-api';
 import { Loader2, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { Button } from '@/components/ui/button';
 
 function fmtMoney(n?: number | null) {
   if (n == null || Number.isNaN(n)) return '—';
@@ -57,15 +57,45 @@ function MetricCell({
   );
 }
 
+function fmtAsOf(iso?: string | null) {
+  if (!iso) return null;
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Prefer top-level spy_alpha, else first period that has real spy_alpha (never invent). */
+function resolveSpyAlpha(data: PortfolioPerformance | null): number | null {
+  if (!data?.available) return null;
+  if (data.spy_alpha != null && !Number.isNaN(data.spy_alpha)) return data.spy_alpha;
+  for (const m of [data.week, data.mtd, data.day, data.quarter, data.ytd]) {
+    if (m?.spy_alpha != null && !Number.isNaN(m.spy_alpha)) return m.spy_alpha;
+  }
+  return null;
+}
+
 export function PerformanceDashboard({ className }: { className?: string }) {
   const [data, setData] = useState<PortfolioPerformance | null>(null);
   const [loading, setLoading] = useState(true);
+  const [clientAsOf, setClientAsOf] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
       const perf = await strategiesApi.portfolioPerformance();
       setData(perf);
+      if (perf.available) {
+        setClientAsOf(perf.as_of || new Date().toISOString());
+      }
     } catch {
       setData({
         available: false,
@@ -90,6 +120,8 @@ export function PerformanceDashboard({ className }: { className?: string }) {
 
   const dayUp = (data?.day?.pnl ?? 0) > 0;
   const dayDown = (data?.day?.pnl ?? 0) < 0;
+  const asOfLabel = fmtAsOf(data?.as_of || clientAsOf);
+  const spyAlpha = resolveSpyAlpha(data);
 
   return (
     <div
@@ -123,6 +155,38 @@ export function PerformanceDashboard({ className }: { className?: string }) {
       <MetricCell label="MTD" metric={data?.mtd} />
       <MetricCell label="Quarter" metric={data?.quarter} />
       <MetricCell label="YTD" metric={data?.ytd} />
+
+      {spyAlpha != null && (
+        <div className="flex flex-col min-w-[72px] px-2 py-0.5 border-l border-ramp-grey-700">
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">α SPY</span>
+          <span
+            className={cn(
+              'text-xs font-medium tabular-nums',
+              spyAlpha > 0 ? 'text-emerald-400' : spyAlpha < 0 ? 'text-rose-400' : 'text-muted-foreground'
+            )}
+          >
+            {fmtPct(spyAlpha)}
+          </span>
+        </div>
+      )}
+
+      {asOfLabel && data?.available && (
+        <span
+          className="text-[10px] text-muted-foreground/80 whitespace-nowrap px-1 shrink-0"
+          title={data.as_of || clientAsOf || undefined}
+        >
+          as of {asOfLabel}
+        </span>
+      )}
+
+      <button
+        type="button"
+        className="text-[10px] text-muted-foreground/60 px-1 shrink-0 cursor-default"
+        title="Snapshot history coming soon"
+        disabled
+      >
+        Details
+      </button>
 
       <Button
         variant="ghost"
