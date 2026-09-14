@@ -334,6 +334,10 @@ class PaperRunRequest(BaseModel):
     strategy_ids: List[str] = Field(default_factory=list)
     mode: Optional[str] = Field(default=None, description="swing | day | auto")
     sync: bool = Field(default=False, description="If true, run synchronously (short path)")
+    execute_trades: bool = Field(
+        default=False,
+        description="If true, place paper orders after analysis (PAPER ONLY; refused when live)",
+    )
 
     @field_validator("tickers")
     @classmethod

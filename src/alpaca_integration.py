@@ -34,8 +34,30 @@ def _get_base_url(mode: str = None) -> str:
     return _get_account(mode).base_url
 
 
-# Legacy module-level headers for backward compat (uses day account)
-_HEADERS = _get_headers("day")
+# Legacy module-level headers for backward compat.
+# Lazy + swing fallback so import does not break when only swing keys exist.
+_HEADERS = None
+
+
+def _ensure_legacy_headers() -> dict:
+    global _HEADERS
+    if _HEADERS is not None:
+        return _HEADERS
+    try:
+        _HEADERS = _get_headers("day")
+    except ValueError:
+        try:
+            _HEADERS = _get_headers("swing")
+        except ValueError:
+            _HEADERS = {}
+    return _HEADERS
+
+
+# Populate lazily on first attribute access via module getattr pattern below
+try:
+    _HEADERS = _ensure_legacy_headers()
+except Exception:
+    _HEADERS = {}
 
 
 def get_alpaca_account(mode: str = None) -> dict:

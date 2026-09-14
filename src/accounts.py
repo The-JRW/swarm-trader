@@ -106,6 +106,9 @@ def get_account_for_mode(mode: str = None) -> AlpacaAccount:
     """
     if not _ACCOUNTS:
         _load_accounts()
+    if not _ACCOUNTS:
+        # Env may have been populated after first import — force reload
+        _load_accounts()
 
     if mode is None:
         from src.config import resolve_mode
@@ -118,9 +121,16 @@ def get_account_for_mode(mode: str = None) -> AlpacaAccount:
     if mode in _ACCOUNTS:
         return _ACCOUNTS[mode]
 
+    # Prefer swing when day is missing (common: only ALPACA_API_KEY set)
+    if mode == "day" and "swing" in _ACCOUNTS:
+        return _ACCOUNTS["swing"]
+
     # Fallback: if swing account isn't configured yet, use day account
     if mode == "swing" and "day" in _ACCOUNTS:
         return _ACCOUNTS["day"]
+
+    if "swing" in _ACCOUNTS:
+        return _ACCOUNTS["swing"]
 
     if "day" in _ACCOUNTS:
         return _ACCOUNTS["day"]
