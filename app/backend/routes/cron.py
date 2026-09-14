@@ -16,8 +16,11 @@ from pydantic import BaseModel, Field, field_validator
 from app.backend.dependencies.cron_auth import require_cron_secret
 from app.backend.models.schemas import ErrorResponse, PaperRunStatusResponse
 from app.backend.services.automation_store import (
+    cron_execute_env_allows,
+    read_cron_recipe,
     read_last_monitor,
     read_ops_status,
+    resolve_cron_execute_trades,
     write_last_monitor,
     write_last_paper_run,
 )
@@ -30,6 +33,7 @@ from app.backend.services.paper_run_service import (
     has_alpaca_keys,
     start_paper_run_async,
 )
+from app.backend.services.performance_snapshot_service import take_performance_snapshot
 from app.backend.services.portfolio_monitor_service import (
     monitor_dry_run_env_default,
     resolve_monitor_dry_run,
@@ -42,9 +46,45 @@ logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(require_cron_secret)])
 
 STORE_NOTE = (
-    "single-worker in-memory run store — status is local to this backend process; "
-    "not durable across restarts or multi-replica"
+    "in-memory run store for live status; durable summaries also under /app/data/runs/ "
+    "(single-replica assumption — not shared across multi-replica)"
 )
+
+
+# Preset → analyst ids (aligned with Strategies UI)
+_PRESET_ANALYST_IDS = {
+    "core": list(CORE_STRATEGY_IDS),
+    "value": [
+        "ben_graham",
+        "warren_buffett",
+        "charlie_munger",
+        "aswath_damodaran",
+        "fundamentals_analyst",
+        "valuation_analyst",
+    ],
+    "growth": [
+        "cathie_wood",
+        "peter_lynch",
+        "phil_fisher",
+        "growth_analyst",
+        "technical_analyst",
+    ],
+    "quant": [
+        "technical_analyst",
+        "autoresearch",
+        "apex",
+        "market_regime",
+        "sentiment_analyst",
+        "news_sentiment_analyst",
+    ],
+}
+
+
+def _strategy_ids_for_preset(preset: str) -> list:
+    p = (preset or "core").strip().lower()
+    if p == "custom":
+        return list(CORE_STRATEGY_IDS)
+    return list(_PRESET_ANALYST_IDS.get(p, CORE_STRATEGY_IDS))
 
 # Fixed liquid fallback when mode universe is unavailable
 DEFAULT_LIQUID_TICKERS = ["NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "SPY"]
@@ -75,9 +115,9 @@ class CronPaperRunRequest(BaseModel):
         description="Optional tickers; default swing core / liquid set",
     )
     mode: Optional[str] = Field(default=None, description="swing | day | auto")
-    execute_trades: bool = Field(
-        default=False,
-        description="Default false — analysis-only unless explicitly true",
+    execute_trades: Optional[bool] = Field(
+        default=None,
+        description="Omit to use recipe; true/false overrides. Still dual-gated by env.",
     )
     strategy_ids: Optional[List[str]] = Field(
         default=None,
@@ -134,6 +174,7 @@ async def cron_paper_run(
     (`paper_run_service`). Not shared across replicas; lost on process restart.
     """
     body = body or CronPaperRunRequest()
+    recipe = read_cron_recipe()
 
     if not has_alpaca_keys():
         raise HTTPException(
@@ -154,14 +195,27 @@ async def cron_paper_run(
             detail="FAIL_CLOSED: cron paper-run refuses ALPACA_TRADING_MODE=live",
         )
 
-    mode = (body.mode or resolve_mode() or "swing").strip().lower()
+    # Recipe defaults when body omits fields
+    mode = (body.mode or recipe.get("mode") or resolve_mode() or "swing").strip().lower()
     if mode not in ("swing", "day", "auto"):
         raise HTTPException(status_code=400, detail="mode must be swing, day, or auto")
 
-    tickers = body.tickers or _default_cron_tickers()
-    strategy_ids = body.strategy_ids if body.strategy_ids is not None else list(CORE_STRATEGY_IDS)
-    # Query param wins when explicitly provided; else body (default false)
-    do_execute = bool(execute_trades) if execute_trades is not None else bool(body.execute_trades)
+    tickers = body.tickers or recipe.get("tickers") or _default_cron_tickers()
+    if body.strategy_ids is not None:
+        strategy_ids = body.strategy_ids
+    else:
+        strategy_ids = _strategy_ids_for_preset(recipe.get("preset") or "core")
+
+    # Requested execute: query > body (if set) > recipe > false
+    if execute_trades is not None:
+        requested_execute = bool(execute_trades)
+    elif body.execute_trades is not None:
+        requested_execute = bool(body.execute_trades)
+    else:
+        requested_execute = bool(recipe.get("execute_trades"))
+
+    # Dual gate: recipe/body true AND env SWARM_CRON_EXECUTE_TRADES truthy
+    do_execute = resolve_cron_execute_trades(requested_execute)
 
     run_id = create_run_record(
         tickers,
@@ -179,6 +233,14 @@ async def cron_paper_run(
         "tickers": tickers,
         "strategy_ids": strategy_ids,
         "execute_trades": do_execute,
+        "execute_requested": requested_execute,
+        "cron_execute_env_allows": cron_execute_env_allows(),
+        "recipe_applied": {
+            "preset": recipe.get("preset"),
+            "mode": recipe.get("mode"),
+            "tickers": recipe.get("tickers"),
+            "execute_trades": recipe.get("execute_trades"),
+        },
         "paper": True,
         "message": "Cron paper analysis started",
         "store_note": STORE_NOTE,
@@ -313,3 +375,39 @@ async def cron_monitor_status():
         "last_paper_run": ops.get("last_paper_run"),
         "updated_at": ops.get("updated_at"),
     }
+
+
+@router.post(
+    "/cron/performance-snapshot",
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}},
+)
+async def cron_performance_snapshot(force: bool = False):
+    """B4 — Write a paper performance snapshot (equity + SPY when available).
+
+    Requires X-Swarm-Cron-Secret. Never invents alpha — returns null when data missing.
+    """
+    try:
+        assert_paper_only()
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=f"FAIL_CLOSED: {e}") from e
+
+    if alpaca_trading_mode() == "live":
+        raise HTTPException(
+            status_code=403,
+            detail="FAIL_CLOSED: performance snapshot refuses ALPACA_TRADING_MODE=live",
+        )
+
+    if not has_alpaca_keys():
+        raise HTTPException(
+            status_code=503,
+            detail="FAIL_CLOSED: Alpaca keys missing — cannot snapshot performance",
+        )
+
+    result = take_performance_snapshot(force=bool(force))
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("error") or "Snapshot failed",
+        )
+    return result
+

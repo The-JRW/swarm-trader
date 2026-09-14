@@ -118,9 +118,11 @@ def create_run_record(
         "error": None,
         "summary": None,
         "decisions": None,
+        "conviction_digest": None,
     }
     with _LOCK:
         _RUNS[run_id] = record
+    _persist_durable(run_id)
     return run_id
 
 
@@ -130,11 +132,27 @@ def get_run(run_id: str) -> Optional[Dict[str, Any]]:
         return dict(rec) if rec else None
 
 
+def _persist_durable(run_id: str) -> None:
+    """Best-effort durable history write (single-replica disk)."""
+    try:
+        from app.backend.services.run_history_store import persist_run
+
+        rec = get_run(run_id)
+        if rec:
+            persist_run(rec)
+    except Exception as e:
+        logger.warning("Durable run persist failed for %s (%s)", run_id, type(e).__name__)
+
+
 def _update_run(run_id: str, **fields: Any) -> None:
     with _LOCK:
         if run_id not in _RUNS:
             return
         _RUNS[run_id].update(fields)
+    # Persist on meaningful status transitions
+    status = fields.get("status")
+    if status in ("queued", "running", "complete", "error", "fail_closed") or "summary" in fields:
+        _persist_durable(run_id)
 
 
 def _select_analysts(strategy_ids: List[str]) -> List[str]:
@@ -332,6 +350,24 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
         decisions = result.get("decisions") or {}
         analyst_signals = result.get("analyst_signals") or {}
 
+        # B3 — conviction digest from real agent signals (no invented scores)
+        try:
+            from app.backend.services.conviction_digest import compute_conviction_digest
+
+            conviction_digest = compute_conviction_digest(
+                analyst_signals,
+                tickers=tickers,
+                decisions=decisions if isinstance(decisions, dict) else None,
+            )
+        except Exception as e:
+            logger.warning("Conviction digest failed (%s)", type(e).__name__)
+            conviction_digest = {
+                "consensus": [],
+                "contested": [],
+                "risk_rejected": [],
+                "error": type(e).__name__,
+            }
+
         # Compact summary — no secrets
         action_counts = {"buy": 0, "sell": 0, "short": 0, "cover": 0, "hold": 0}
         decision_rows = []
@@ -410,6 +446,7 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
             "executed_trades": executed,
             "execute_blocked_reason": execute_blocked_reason,
             "trade_results": trade_results,
+            "conviction_digest": conviction_digest,
         }
 
         _update_run(
@@ -419,7 +456,28 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
             summary=summary,
             decisions=decisions,
             mode=mode,
+            conviction_digest=conviction_digest,
         )
+        try:
+            from app.backend.services.automation_store import (
+                write_last_conviction_digest,
+                write_last_paper_run,
+            )
+
+            write_last_conviction_digest(conviction_digest, run_id=run_id)
+            write_last_paper_run(
+                {
+                    "run_id": run_id,
+                    "status": "complete",
+                    "mode": mode,
+                    "tickers": tickers,
+                    "execute_trades": bool(rec.get("execute_trades")),
+                    "completed_at": _now_iso(),
+                    "conviction_digest": conviction_digest,
+                }
+            )
+        except Exception as e:
+            logger.warning("Could not persist digest/ops (%s)", type(e).__name__)
         logger.info("Paper run %s complete", run_id)
     except Exception as e:
         # Never include env/secrets in error message

@@ -27,6 +27,12 @@ from app.backend.services.paper_run_service import (
     has_alpaca_keys,
     start_paper_run_async,
 )
+from app.backend.services.run_history_store import list_history, read_run
+from app.backend.services.performance_snapshot_service import (
+    compute_alpha_vs_spy,
+    load_snapshots,
+    read_latest_snapshot,
+)
 from src.config import resolve_mode
 
 router = APIRouter()
@@ -161,6 +167,24 @@ async def start_paper_run(body: PaperRunRequest):
 
 
 @router.get(
+    "/runs/history",
+)
+async def runs_history(limit: int = Query(default=50, ge=1, le=50)):
+    """B2 — Last N durable paper-run summaries (single-replica disk under /app/data/runs/)."""
+    rows = list_history(limit=limit)
+    return {
+        "paper_only": True,
+        "limit": limit,
+        "count": len(rows),
+        "runs": rows,
+        "note": (
+            "Durable on local disk (single-replica assumption). "
+            "Not shared across multi-replica deploys; prefer one backend replica."
+        ),
+    }
+
+
+@router.get(
     "/runs/{run_id}",
     response_model=PaperRunStatusResponse,
     responses={404: {"model": ErrorResponse}},
@@ -168,6 +192,23 @@ async def start_paper_run(body: PaperRunRequest):
 async def get_paper_run(run_id: str):
     rec = get_run(run_id)
     if not rec:
+        # Fall back to durable history
+        durable = read_run(run_id)
+        if durable:
+            return PaperRunStatusResponse(
+                run_id=durable.get("run_id") or run_id,
+                status=durable.get("status") or "unknown",
+                mode=durable.get("mode"),
+                instrument=durable.get("instrument"),
+                tickers=durable.get("tickers"),
+                strategy_ids=durable.get("strategy_ids"),
+                created_at=durable.get("created_at"),
+                started_at=durable.get("started_at"),
+                completed_at=durable.get("completed_at"),
+                error=durable.get("error"),
+                summary=durable.get("summary"),
+                decisions=None,
+            )
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
     return PaperRunStatusResponse(**rec)
 
@@ -613,6 +654,22 @@ async def portfolio_performance():
                 if not day.available and len(pairs) >= 2:
                     day = _metric(pairs[-2][1], end_eq)
 
+        # B4 — attach α vs SPY only when real snapshot data exists (never fake zeros)
+        spy_alpha = None
+        snapshot_as_of = None
+        try:
+            snaps = load_snapshots()
+            spy_alpha = compute_alpha_vs_spy(snaps)
+            latest = read_latest_snapshot()
+            if latest:
+                snapshot_as_of = latest.get("timestamp") or latest.get("date")
+                # Prefer daily alpha from latest when multi-day unavailable
+                if spy_alpha is None and latest.get("alpha_vs_spy_daily") is not None:
+                    spy_alpha = float(latest["alpha_vs_spy_daily"])
+        except Exception:
+            spy_alpha = None
+
+        as_of = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         return PortfolioPerformanceResponse(
             available=True,
             paper=True,
@@ -623,8 +680,9 @@ async def portfolio_performance():
             mtd=mtd,
             quarter=quarter,
             ytd=ytd,
-            as_of=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            # spy_alpha omitted until real SPY benchmark data is wired (never fake)
+            as_of=as_of,
+            spy_alpha=spy_alpha,  # None unless real SPY data in snapshots
+            snapshot_as_of=snapshot_as_of,
         )
     except Exception as e:
         return PortfolioPerformanceResponse(
