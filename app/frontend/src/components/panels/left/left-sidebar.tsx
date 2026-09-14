@@ -2,6 +2,10 @@ import { useFlowManagementTabs } from '@/hooks/use-flow-management-tabs';
 import { useResizable } from '@/hooks/use-resizable';
 import { cn } from '@/lib/utils';
 import { ReactNode, useEffect } from 'react';
+import { useTabsContext } from '@/contexts/tabs-context';
+import { TabService } from '@/services/tab-service';
+import { Button } from '@/components/ui/button';
+import { Sparkles } from 'lucide-react';
 import { FlowActions } from './flow-actions';
 import { FlowCreateDialog } from './flow-create-dialog';
 import { FlowList } from './flow-list';
@@ -18,6 +22,7 @@ export function LeftSidebar({
   isCollapsed,
   onWidthChange,
 }: LeftSidebarProps) {
+  const { openTab } = useTabsContext();
   // Use our custom hooks
   const { width, isDragging, elementRef, startResize } = useResizable({
     defaultWidth: 280,
@@ -63,6 +68,18 @@ export function LeftSidebar({
         width: `${width}px`
       }}
     >
+      <div className="px-3 pt-2 pb-1">
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full justify-start gap-2 border-blue-500/40 text-primary hover:bg-blue-500/10"
+          onClick={() => openTab(TabService.createStrategiesTab())}
+        >
+          <Sparkles size={14} />
+          Strategies (paper)
+        </Button>
+      </div>
+
       <FlowActions
         onSave={handleSaveCurrentFlow}
         onCreate={handleCreateNewFlow}

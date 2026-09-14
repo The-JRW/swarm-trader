@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { PanelBottom, PanelLeft, PanelRight, Settings } from 'lucide-react';
+import { PanelBottom, PanelLeft, PanelRight, Settings, Sparkles } from 'lucide-react';
 
 interface TopBarProps {
   isLeftCollapsed: boolean;
@@ -10,6 +10,7 @@ interface TopBarProps {
   onToggleRight: () => void;
   onToggleBottom: () => void;
   onSettingsClick: () => void;
+  onStrategiesClick?: () => void;
 }
 
 export function TopBar({
@@ -20,9 +21,27 @@ export function TopBar({
   onToggleRight,
   onToggleBottom,
   onSettingsClick,
+  onStrategiesClick,
 }: TopBarProps) {
   return (
     <div className="absolute top-0 right-0 z-40 flex items-center gap-0 py-1 px-2 bg-panel/80">
+      {onStrategiesClick && (
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onStrategiesClick}
+            className="h-8 px-2 gap-1 text-muted-foreground hover:text-foreground hover:bg-ramp-grey-700 transition-colors"
+            aria-label="Open Strategies"
+            title="Strategies — paper analysis"
+          >
+            <Sparkles size={14} />
+            <span className="text-xs hidden sm:inline">Strategies</span>
+          </Button>
+          <div className="w-px h-5 bg-ramp-grey-700 mx-1" />
+        </>
+      )}
+
       {/* Left Sidebar Toggle */}
       <Button
         variant="ghost"
@@ -84,4 +103,4 @@ export function TopBar({
       </Button>
     </div>
   );
-} 
+}

@@ -289,3 +289,96 @@ class ApiKeySummaryResponse(BaseModel):
 class ApiKeyBulkUpdateRequest(BaseModel):
     """Request to update multiple API keys at once"""
     api_keys: List[ApiKeyCreateRequest]
+
+
+# ---------------------------------------------------------------------------
+# Strategies UI / paper trading schemas
+# ---------------------------------------------------------------------------
+
+class StrategyInfo(BaseModel):
+    id: str
+    name: str
+    description: str
+    category: str  # analyst | risk | pm
+    enabled_default: bool = False
+
+
+class StrategiesListResponse(BaseModel):
+    strategies: List[StrategyInfo]
+    server_keys: bool = False
+    alpaca_trading_mode: str = "paper"
+
+
+class TradingModeResponse(BaseModel):
+    mode: str  # swing | day | auto
+    resolved_mode: str  # swing | day (auto resolves to swing fallback for display)
+    override: Optional[str] = None
+    override_until: Optional[str] = None
+    last_mode_used: Optional[str] = None
+    last_mode_reason: Optional[str] = None
+    last_updated: Optional[str] = None
+    updated_by: Optional[str] = None
+    alpaca_trading_mode: str = "paper"
+    paper_only: bool = True
+
+
+class TradingModeSetRequest(BaseModel):
+    mode: str = Field(..., description="swing | day | auto")
+    reason: Optional[str] = "Set from Strategies UI"
+    override: bool = False
+    override_hours: Optional[float] = None
+
+
+class PaperRunRequest(BaseModel):
+    tickers: List[str] = Field(..., min_length=1, max_length=20)
+    strategy_ids: List[str] = Field(default_factory=list)
+    mode: Optional[str] = Field(default=None, description="swing | day | auto")
+    sync: bool = Field(default=False, description="If true, run synchronously (short path)")
+
+    @field_validator("tickers")
+    @classmethod
+    def normalize_tickers(cls, v: List[str]) -> List[str]:
+        cleaned = []
+        for t in v:
+            if not t or not str(t).strip():
+                continue
+            sym = str(t).strip().upper()
+            if not sym.replace(".", "").isalnum():
+                raise ValueError(f"Invalid ticker: {t}")
+            if sym not in cleaned:
+                cleaned.append(sym)
+        if not cleaned:
+            raise ValueError("At least one ticker is required")
+        if len(cleaned) > 20:
+            raise ValueError("Max 20 tickers per paper run")
+        return cleaned
+
+
+class PaperRunCreateResponse(BaseModel):
+    run_id: str
+    status: str
+    message: str
+
+
+class PaperRunStatusResponse(BaseModel):
+    run_id: str
+    status: str  # queued | running | complete | error | fail_closed
+    mode: Optional[str] = None
+    tickers: Optional[List[str]] = None
+    strategy_ids: Optional[List[str]] = None
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+    summary: Optional[Dict[str, Any]] = None
+    decisions: Optional[Dict[str, Any]] = None
+
+
+class PortfolioGlanceResponse(BaseModel):
+    available: bool
+    paper: bool = True
+    cash: Optional[float] = None
+    equity: Optional[float] = None
+    buying_power: Optional[float] = None
+    positions_count: Optional[int] = None
+    message: Optional[str] = None
