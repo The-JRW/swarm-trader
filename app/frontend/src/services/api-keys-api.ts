@@ -40,9 +40,18 @@ export interface ApiKeyBulkUpdateRequest {
 }
 
 class ApiKeysService {
-  /** Resolve base URL per request — never cache at module load (SSR / https origin). */
-  private getBaseUrl(): string {
-    return `${getApiBaseUrl()}/api-keys`;
+  /**
+   * Collection URL MUST end with trailing slash.
+   * Live FastAPI+nginx: GET /api/api-keys (no slash) 307s to http://host/api-keys/
+   * (strips /api, downgrades https) — browser fetch then fails.
+   * Resolve getApiBaseUrl() per request — never cache at module load.
+   */
+  private getCollectionUrl(): string {
+    return `${getApiBaseUrl()}/api-keys/`;
+  }
+
+  private getItemUrl(provider: string, suffix = ''): string {
+    return `${getApiBaseUrl()}/api-keys/${encodeURIComponent(provider)}${suffix}`;
   }
 
   async getAllApiKeys(includeInactive = false): Promise<ApiKeySummary[]> {
@@ -50,8 +59,10 @@ class ApiKeysService {
     if (includeInactive) {
       params.append('include_inactive', 'true');
     }
+    const qs = params.toString();
+    const url = qs ? `${this.getCollectionUrl()}?${qs}` : this.getCollectionUrl();
 
-    const response = await fetch(`${this.getBaseUrl()}?${params}`);
+    const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`Failed to fetch API keys: ${response.statusText}`);
     }
@@ -59,7 +70,7 @@ class ApiKeysService {
   }
 
   async getApiKey(provider: string): Promise<ApiKey> {
-    const response = await fetch(`${this.getBaseUrl()}/${encodeURIComponent(provider)}`);
+    const response = await fetch(this.getItemUrl(provider));
     if (!response.ok) {
       if (response.status === 404) {
         throw new Error('API key not found');
@@ -70,7 +81,7 @@ class ApiKeysService {
   }
 
   async createOrUpdateApiKey(request: ApiKeyCreateRequest): Promise<ApiKey> {
-    const response = await fetch(this.getBaseUrl(), {
+    const response = await fetch(this.getCollectionUrl(), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -85,7 +96,7 @@ class ApiKeysService {
   }
 
   async updateApiKey(provider: string, request: ApiKeyUpdateRequest): Promise<ApiKey> {
-    const response = await fetch(`${this.getBaseUrl()}/${encodeURIComponent(provider)}`, {
+    const response = await fetch(this.getItemUrl(provider), {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -103,7 +114,7 @@ class ApiKeysService {
   }
 
   async deleteApiKey(provider: string): Promise<void> {
-    const response = await fetch(`${this.getBaseUrl()}/${encodeURIComponent(provider)}`, {
+    const response = await fetch(this.getItemUrl(provider), {
       method: 'DELETE',
     });
 
@@ -116,7 +127,7 @@ class ApiKeysService {
   }
 
   async deactivateApiKey(provider: string): Promise<ApiKeySummary> {
-    const response = await fetch(`${this.getBaseUrl()}/${encodeURIComponent(provider)}/deactivate`, {
+    const response = await fetch(this.getItemUrl(provider, '/deactivate'), {
       method: 'PATCH',
     });
 
@@ -130,7 +141,8 @@ class ApiKeysService {
   }
 
   async bulkUpdateApiKeys(request: ApiKeyBulkUpdateRequest): Promise<ApiKey[]> {
-    const response = await fetch(`${this.getBaseUrl()}/bulk`, {
+    // /bulk has no trailing-slash redirect trap; keep path under /api-keys/
+    const response = await fetch(`${getApiBaseUrl()}/api-keys/bulk`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -145,7 +157,7 @@ class ApiKeysService {
   }
 
   async updateLastUsed(provider: string): Promise<void> {
-    const response = await fetch(`${this.getBaseUrl()}/${encodeURIComponent(provider)}/last-used`, {
+    const response = await fetch(this.getItemUrl(provider, '/last-used'), {
       method: 'PATCH',
     });
 

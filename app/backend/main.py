@@ -13,7 +13,13 @@ from app.backend.services.ollama_service import ollama_service
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AI Hedge Fund API", description="Backend API for AI Hedge Fund", version="0.1.0")
+app = FastAPI(
+    title="AI Hedge Fund API",
+    description="Backend API for AI Hedge Fund",
+    version="0.1.0",
+    # Avoid 307 /api-keys → http://host/api-keys/ behind nginx path strip (/api → backend /)
+    redirect_slashes=False,
+)
 
 # Initialize database tables (this is safe to run multiple times)
 Base.metadata.create_all(bind=engine)
