@@ -509,3 +509,27 @@ class PortfolioCloseResponse(BaseModel):
     results: List[PortfolioCloseResult] = Field(default_factory=list)
     message: Optional[str] = None
 
+
+class PeriodPerformanceMetric(BaseModel):
+    """P/L for a calendar/trading period. available=false => show em dash."""
+    available: bool = False
+    pnl: Optional[float] = None
+    pnl_pct: Optional[float] = None
+    start_equity: Optional[float] = None
+    end_equity: Optional[float] = None
+
+
+class PortfolioPerformanceResponse(BaseModel):
+    """Paper portfolio performance strip. Never invents numbers; missing = available:false."""
+    available: bool
+    paper: bool = True
+    equity: Optional[float] = None
+    cash: Optional[float] = None
+    day: PeriodPerformanceMetric = Field(default_factory=PeriodPerformanceMetric)
+    week: PeriodPerformanceMetric = Field(default_factory=PeriodPerformanceMetric)
+    mtd: PeriodPerformanceMetric = Field(default_factory=PeriodPerformanceMetric)
+    quarter: PeriodPerformanceMetric = Field(default_factory=PeriodPerformanceMetric)
+    ytd: PeriodPerformanceMetric = Field(default_factory=PeriodPerformanceMetric)
+    message: Optional[str] = None
+
+

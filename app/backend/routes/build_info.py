@@ -30,5 +30,5 @@ async def build_info():
         "service": "swarm-trader-backend",
         "git_sha": _resolve_git_sha(),
         "image_tag": os.environ.get("IMAGE_TAG", "unknown"),
-        "features": ["strategies-ux", "alpaca-sip", "api-keys-env-sync"],
+        "features": ["strategies-ux", "alpaca-sip", "api-keys-env-sync", "perf-dashboard", "components-click-add"],
     }

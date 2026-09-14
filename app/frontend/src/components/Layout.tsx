@@ -119,10 +119,10 @@ function LayoutContent({ children }: { children: ReactNode }) {
         onStrategiesClick={handleStrategiesClick}
       />
 
-      {/* Tab Bar - positioned absolutely like bottom panel */}
+      {/* Tab Bar — below performance top bar */}
       <div 
-        className="absolute top-0 z-10 transition-all duration-200"
-        style={getSidebarBasedStyle()}
+        className="absolute z-10 transition-all duration-200"
+        style={{ ...getSidebarBasedStyle(), top: '40px' }}
       >
         <TabBar />
       </div>
@@ -133,7 +133,7 @@ function LayoutContent({ children }: { children: ReactNode }) {
         style={{
           left: !isLeftCollapsed ? `${leftSidebarWidth}px` : '0px',
           right: !isRightCollapsed ? `${rightSidebarWidth}px` : '0px',
-          top: '40px', // Tab bar height
+          top: '80px', // Performance top bar (40) + tab bar (40)
           bottom: !isBottomCollapsed ? `${bottomPanelHeight}px` : '0px',
         }}
       >

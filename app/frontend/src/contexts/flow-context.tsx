@@ -5,10 +5,14 @@ import { clearAllNodeStates, getAllNodeStates, setNodeInternalState, setCurrentF
 import { flowService } from '@/services/flow-service';
 import { Flow } from '@/types/flow';
 import { MarkerType, ReactFlowInstance, useReactFlow, XYPosition } from '@xyflow/react';
-import { createContext, ReactNode, useCallback, useContext, useState } from 'react';
+import { createContext, ReactNode, useCallback, useContext, useRef, useState } from 'react';
 
 interface FlowContextType {
   addComponentToFlow: (componentName: string) => Promise<void>;
+  /** Queue a component to add after the next flow canvas load (e.g. auto-created flow). */
+  enqueueComponentToAdd: (componentName: string) => void;
+  /** Flush any queued component adds onto the active React Flow canvas. */
+  flushPendingComponents: () => Promise<void>;
   saveCurrentFlow: (name?: string, description?: string) => Promise<Flow | null>;
   loadFlow: (flow: Flow) => Promise<void>;
   createNewFlow: () => Promise<void>;
@@ -37,6 +41,8 @@ export function FlowProvider({ children }: FlowProviderProps) {
   const [currentFlowId, setCurrentFlowId] = useState<number | null>(null);
   const [currentFlowName, setCurrentFlowName] = useState('Untitled Flow');
   const [isUnsaved, setIsUnsaved] = useState(false);
+  // Components queued while no flow canvas is mounted (Strategies / empty state)
+  const pendingComponentsRef = useRef<string[]>([]);
 
   // Calculate viewport center position with optional randomness
   const getViewportPosition = useCallback((addRandomness = false): XYPosition => {
@@ -339,8 +345,25 @@ export function FlowProvider({ children }: FlowProviderProps) {
     }
   }, [addMultipleNodesToFlow, addSingleNodeToFlow]);
 
+  const enqueueComponentToAdd = useCallback((componentName: string) => {
+    pendingComponentsRef.current.push(componentName);
+  }, []);
+
+  const flushPendingComponents = useCallback(async () => {
+    const pending = pendingComponentsRef.current.splice(0, pendingComponentsRef.current.length);
+    for (const name of pending) {
+      try {
+        await addComponentToFlow(name);
+      } catch (error) {
+        console.error(`Failed to flush pending component ${name}:`, error);
+      }
+    }
+  }, [addComponentToFlow]);
+
   const value = {
     addComponentToFlow,
+    enqueueComponentToAdd,
+    flushPendingComponents,
     saveCurrentFlow,
     loadFlow,
     createNewFlow,

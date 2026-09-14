@@ -15,7 +15,7 @@ interface FlowTabContentProps {
 }
 
 export function FlowTabContent({ flow, className }: FlowTabContentProps) {
-  const { loadFlow } = useFlowContext();
+  const { loadFlow, flushPendingComponents } = useFlowContext();
   const { activeTabId } = useTabsContext();
 
   // Enhanced load function that restores both use-node-state and node context data
@@ -68,11 +68,17 @@ export function FlowTabContent({ flow, className }: FlowTabContentProps) {
           // Fallback to loading the cached flow data with complete state restoration
           await loadFlowWithCompleteState(flow);
         }
+        // Apply any components queued while no canvas was open (sidebar + buttons)
+        try {
+          await flushPendingComponents();
+        } catch (flushErr) {
+          console.error('Failed to flush pending components:', flushErr);
+        }
       };
 
       fetchAndLoadFlow();
     }
-  }, [activeTabId, flow.id, flow, loadFlow]);
+  }, [activeTabId, flow.id, flow, loadFlow, flushPendingComponents]);
 
   return (
     <div className={cn("h-full w-full", className)}>

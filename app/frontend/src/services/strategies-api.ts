@@ -88,6 +88,28 @@ export interface PortfolioGlance {
   message?: string | null;
 }
 
+
+export interface PeriodPerformanceMetric {
+  available: boolean;
+  pnl?: number | null;
+  pnl_pct?: number | null;
+  start_equity?: number | null;
+  end_equity?: number | null;
+}
+
+export interface PortfolioPerformance {
+  available: boolean;
+  paper: boolean;
+  equity?: number | null;
+  cash?: number | null;
+  day: PeriodPerformanceMetric;
+  week: PeriodPerformanceMetric;
+  mtd: PeriodPerformanceMetric;
+  quarter: PeriodPerformanceMetric;
+  ytd: PeriodPerformanceMetric;
+  message?: string | null;
+}
+
 export interface PortfolioOrder {
   symbol?: string | null;
   side?: string | null;
@@ -202,6 +224,13 @@ export const strategiesApi = {
 
   getRun: async (runId: string): Promise<PaperRunStatusResponse> => {
     const response = await fetch(`${getApiBaseUrl()}/runs/${runId}`);
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+
+  portfolioPerformance: async (): Promise<PortfolioPerformance> => {
+    const response = await fetch(`${getApiBaseUrl()}/portfolio/performance`);
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();
   },
