@@ -16,6 +16,28 @@ import os
 from dataclasses import dataclass
 
 
+PAPER_ALPACA_BASE_URL = "https://paper-api.alpaca.markets/v2"
+LIVE_ALPACA_BASE_URL = "https://api.alpaca.markets/v2"
+
+
+def resolve_alpaca_base_url() -> str:
+    """Resolve Alpaca REST base URL from env (defaults to paper for safety).
+
+    Priority:
+      1. ALPACA_BASE_URL if set explicitly
+      2. ALPACA_TRADING_MODE=live|paper
+      3. paper endpoint
+    """
+    explicit = os.environ.get("ALPACA_BASE_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+
+    mode = os.environ.get("ALPACA_TRADING_MODE", "paper").strip().lower()
+    if mode == "live":
+        return LIVE_ALPACA_BASE_URL
+    return PAPER_ALPACA_BASE_URL
+
+
 @dataclass
 class AlpacaAccount:
     """Credentials + metadata for a single Alpaca account."""
@@ -23,7 +45,7 @@ class AlpacaAccount:
     account_id: str
     api_key: str
     api_secret: str
-    base_url: str = "https://paper-api.alpaca.markets/v2"
+    base_url: str = PAPER_ALPACA_BASE_URL
 
     @property
     def headers(self) -> dict:
@@ -45,12 +67,15 @@ def _load_accounts() -> None:
     # Swing account (primary — ALPACA_API_KEY / ALPACA_API_SECRET)
     swing_key = os.environ.get("ALPACA_API_KEY", "")
     swing_secret = os.environ.get("ALPACA_API_SECRET", "")
+    base_url = resolve_alpaca_base_url()
+
     if swing_key and swing_secret:
         _ACCOUNTS["swing"] = AlpacaAccount(
             name="Swing",
             account_id=os.environ.get("ALPACA_ACCOUNT_ID", "unknown"),
             api_key=swing_key,
             api_secret=swing_secret,
+            base_url=base_url,
         )
 
     # Day trading account (optional — ALPACA_DAY_API_KEY / ALPACA_DAY_API_SECRET)
@@ -62,6 +87,7 @@ def _load_accounts() -> None:
             account_id=os.environ.get("ALPACA_DAY_ACCOUNT_ID", "unknown"),
             api_key=day_key,
             api_secret=day_secret,
+            base_url=base_url,
         )
 
 

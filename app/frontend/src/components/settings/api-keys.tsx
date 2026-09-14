@@ -15,15 +15,29 @@ interface ApiKey {
 
 const FINANCIAL_API_KEYS: ApiKey[] = [
   {
+    key: 'TIINGO_API_KEY',
+    label: 'Tiingo API',
+    description: 'Preferred market-data source for prices (IEX / daily)',
+    url: 'https://www.tiingo.com/',
+    placeholder: 'your-tiingo-api-key'
+  },
+  {
     key: 'FINANCIAL_DATASETS_API_KEY',
     label: 'Financial Datasets API',
-    description: 'For getting financial data to power the hedge fund',
+    description: 'Legacy financial data API (optional; free yfinance/SEC fallbacks exist)',
     url: 'https://financialdatasets.ai/',
     placeholder: 'your-financial-datasets-api-key'
   }
 ];
 
 const LLM_API_KEYS: ApiKey[] = [
+  {
+    key: 'OPENROUTER_API_KEY',
+    label: 'OpenRouter API',
+    description: 'For OpenRouter models (gpt-4o, gpt-4o-mini, etc.)',
+    url: 'https://openrouter.ai/',
+    placeholder: 'your-openrouter-api-key'
+  },
   {
     key: 'ANTHROPIC_API_KEY',
     label: 'Anthropic API',
@@ -58,13 +72,6 @@ const LLM_API_KEYS: ApiKey[] = [
     description: 'For OpenAI models (gpt-4o, gpt-4o-mini, etc.)',
     url: 'https://platform.openai.com/',
     placeholder: 'your-openai-api-key'
-  },
-  {
-    key: 'OPENROUTER_API_KEY',
-    label: 'OpenRouter API',
-    description: 'For OpenRouter models (gpt-4o, gpt-4o-mini, etc.)',
-    url: 'https://openrouter.ai/',
-    placeholder: 'your-openrouter-api-key'
   },
   {
     key: 'GIGACHAT_API_KEY',

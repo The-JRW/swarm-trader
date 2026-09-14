@@ -1,6 +1,7 @@
 """Helper functions for LLM"""
 
 import json
+import os
 from pydantic import BaseModel
 from src.llm.models import get_model, get_model_info
 from src.utils.progress import progress
@@ -166,8 +167,14 @@ def get_agent_model_config(state, agent_name):
             return model_name, model_provider.value if hasattr(model_provider, 'value') else str(model_provider)
     
     # Fall back to global configuration (system defaults)
-    model_name = state.get("metadata", {}).get("model_name") or "gpt-4.1"
-    model_provider = state.get("metadata", {}).get("model_provider") or "OPENAI"
+    # Prefer OpenRouter when key / DEFAULT_LLM_* are configured.
+    default_model = os.getenv("DEFAULT_LLM_MODEL", "").strip()
+    default_provider = os.getenv("DEFAULT_LLM_PROVIDER", "").strip()
+    if not default_provider and os.getenv("OPENROUTER_API_KEY"):
+        default_provider = "OpenRouter"
+        default_model = default_model or "openai/gpt-4o-mini"
+    model_name = state.get("metadata", {}).get("model_name") or default_model or "gpt-4.1"
+    model_provider = state.get("metadata", {}).get("model_provider") or default_provider or "OPENAI"
     
     # Convert enum to string if necessary
     if hasattr(model_provider, 'value'):

@@ -1,6 +1,6 @@
 """
 Drop-in replacement for api.py using free public data sources.
-- Prices: yfinance
+- Prices: Tiingo (when TIINGO_API_KEY set), else yfinance
 - Financial metrics: SEC EDGAR XBRL companyfacts + yfinance
 - Line items: SEC EDGAR XBRL companyfacts
 - Insider trades: SEC EDGAR Form 4 RSS
@@ -8,7 +8,7 @@ Drop-in replacement for api.py using free public data sources.
 - Company facts / market cap: yfinance .info + SEC EDGAR
 - File-based JSON cache with TTLs
 
-No paid API keys required.
+Paid Tiingo key is optional; yfinance/SEC remain as free fallbacks.
 """
 
 import datetime
@@ -191,7 +191,7 @@ def _extract_xbrl_values(facts: dict, concept: str, namespace: str = "us-gaap", 
 
 
 def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None) -> list[Price]:
-    """Fetch price data using yfinance."""
+    """Fetch price data — Tiingo first when TIINGO_API_KEY is set, else yfinance."""
     cache_key = f"{ticker}_{start_date}_{end_date}"
 
     if cached_data := _cache.get_prices(cache_key):
@@ -203,6 +203,20 @@ def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None)
         _cache.set_prices(cache_key, disk)
         return [Price(**p) for p in disk]
 
+    # Prefer Tiingo when configured
+    try:
+        from src.tools.tiingo import get_prices as tiingo_get_prices, tiingo_api_key
+
+        if tiingo_api_key(api_key) or tiingo_api_key():
+            tiingo_prices = tiingo_get_prices(ticker, start_date, end_date, api_key=api_key)
+            if tiingo_prices:
+                _cache.set_prices(cache_key, tiingo_prices)
+                _disk_cache_set("prices", cache_key, tiingo_prices)
+                return [Price(**p) for p in tiingo_prices]
+    except Exception as e:
+        print(f"[api_free] Tiingo get_prices fallback for {ticker}: {e}")
+
+    # Free fallback: yfinance
     try:
         yf_ticker = _get_yf_ticker(ticker)
         # yfinance end is exclusive, add 1 day

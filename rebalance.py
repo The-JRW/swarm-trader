@@ -23,28 +23,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.config import get_mode_config, resolve_mode
-
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_API_SECRET = os.getenv("ALPACA_API_SECRET", "")
-ALPACA_BASE_URL = "https://paper-api.alpaca.markets/v2"
-
-if not ALPACA_API_KEY or not ALPACA_API_SECRET:
-    raise EnvironmentError("ALPACA_API_KEY and ALPACA_API_SECRET must be set in .env")
-
-HEADERS = {
-    "APCA-API-KEY-ID": ALPACA_API_KEY,
-    "APCA-API-SECRET-KEY": ALPACA_API_SECRET,
-    "Content-Type": "application/json",
-}
+from src.accounts import get_account_for_mode
 
 
-def get_positions():
-    resp = requests.get(f"{ALPACA_BASE_URL}/positions", headers=HEADERS, timeout=10)
+def get_positions(mode=None):
+    account = get_account_for_mode(mode)
+    resp = requests.get(f"{account.base_url}/positions", headers=account.headers, timeout=10)
     resp.raise_for_status()
     return {p["symbol"]: p for p in resp.json()}
 
 
-def place_sell_order(ticker, qty):
+def place_sell_order(ticker, qty, mode=None):
+    account = get_account_for_mode(mode)
     order = {
         "symbol": ticker,
         "qty": str(qty),
@@ -52,7 +42,7 @@ def place_sell_order(ticker, qty):
         "type": "market",
         "time_in_force": "day",
     }
-    resp = requests.post(f"{ALPACA_BASE_URL}/orders", headers=HEADERS, json=order, timeout=10)
+    resp = requests.post(f"{account.base_url}/orders", headers=account.headers, json=order, timeout=10)
     if resp.status_code in (200, 201):
         return resp.status_code, resp.json()
     return resp.status_code, resp.text
@@ -94,7 +84,7 @@ def main():
     print(f"{'='*60}")
     print()
 
-    positions = get_positions()
+    positions = get_positions(mode=mode)
 
     # Find positions outside the active universe
     out_of_universe = {
@@ -131,7 +121,7 @@ def main():
             print(f"     → DRY RUN: would sell all {total_shares} shares")
             results.append({"ticker": ticker, "qty": total_shares, "success": True, "dry_run": True})
         else:
-            status_code, response = place_sell_order(ticker, total_shares)
+            status_code, response = place_sell_order(ticker, total_shares, mode=mode)
             if status_code in (200, 201):
                 order_id = response.get("id", "?")
                 order_status = response.get("status", "?")

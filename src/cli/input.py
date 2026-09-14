@@ -1,3 +1,4 @@
+import os
 import sys
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -150,9 +151,31 @@ def select_model(use_ollama: bool, model_flag: str | None = None) -> tuple[str, 
             f"\nSelected {Fore.CYAN}Ollama{Style.RESET_ALL} model: {Fore.GREEN + Style.BRIGHT}{model_name}{Style.RESET_ALL}\n"
         )
     else:
+        # Env defaults / OpenRouter preference (non-interactive when DEFAULT_LLM_* set)
+        env_model = os.getenv("DEFAULT_LLM_MODEL", "").strip()
+        env_provider = os.getenv("DEFAULT_LLM_PROVIDER", "").strip()
+        if env_model and not env_provider and os.getenv("OPENROUTER_API_KEY"):
+            env_provider = ModelProvider.OPENROUTER.value
+        if not env_model and env_provider == ModelProvider.OPENROUTER.value and os.getenv("OPENROUTER_API_KEY"):
+            env_model = "openai/gpt-4o-mini"
+        if env_model and env_provider:
+            print(
+                f"\nUsing default model from env: {Fore.CYAN}{env_provider}{Style.RESET_ALL} - "
+                f"{Fore.GREEN + Style.BRIGHT}{env_model}{Style.RESET_ALL}\n"
+            )
+            return env_model, env_provider
+
+        # Prefer OpenRouter entries first when key is present
+        ordered = list(LLM_ORDER)
+        if os.getenv("OPENROUTER_API_KEY"):
+            preferred = [c for c in ordered if c[2] == ModelProvider.OPENROUTER.value and c[1] == "openai/gpt-4o-mini"]
+            openrouter = [c for c in ordered if c[2] == ModelProvider.OPENROUTER.value and c[1] != "openai/gpt-4o-mini"]
+            others = [c for c in ordered if c[2] != ModelProvider.OPENROUTER.value]
+            ordered = preferred + openrouter + others
+
         model_choice = questionary.select(
             "Select your LLM model:",
-            choices=[questionary.Choice(display, value=(name, provider)) for display, name, provider in LLM_ORDER],
+            choices=[questionary.Choice(display, value=(name, provider)) for display, name, provider in ordered],
             style=questionary.Style(
                 [
                     ("selected", "fg:green bold"),

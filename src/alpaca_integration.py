@@ -19,14 +19,19 @@ from datetime import datetime
 
 from src.accounts import get_account_for_mode, AlpacaAccount
 
-# Always paper trading - never use live endpoint
-ALPACA_BASE_URL = "https://paper-api.alpaca.markets/v2"
+def _get_account(mode: str = None) -> AlpacaAccount:
+    """Get the Alpaca account (credentials + base_url) for the trading mode."""
+    return get_account_for_mode(mode)
 
 
 def _get_headers(mode: str = None) -> dict:
     """Get API headers for the appropriate account based on trading mode."""
-    account = get_account_for_mode(mode)
-    return account.headers
+    return _get_account(mode).headers
+
+
+def _get_base_url(mode: str = None) -> str:
+    """Get Alpaca REST base URL from the account for this mode (env-driven)."""
+    return _get_account(mode).base_url
 
 
 # Legacy module-level headers for backward compat (uses day account)
@@ -40,7 +45,7 @@ def get_alpaca_account(mode: str = None) -> dict:
         mode: Trading mode ("swing" or "day"). Routes to correct account.
     """
     headers = _get_headers(mode)
-    resp = requests.get(f"{ALPACA_BASE_URL}/account", headers=headers, timeout=10)
+    resp = requests.get(f"{_get_base_url(mode)}/account", headers=headers, timeout=10)
     resp.raise_for_status()
     return resp.json()
 
@@ -52,7 +57,7 @@ def get_alpaca_positions(mode: str = None) -> list[dict]:
         mode: Trading mode ("swing" or "day"). Routes to correct account.
     """
     headers = _get_headers(mode)
-    resp = requests.get(f"{ALPACA_BASE_URL}/positions", headers=headers, timeout=10)
+    resp = requests.get(f"{_get_base_url(mode)}/positions", headers=headers, timeout=10)
     resp.raise_for_status()
     return resp.json()
 
@@ -141,7 +146,7 @@ def _place_alpaca_order(ticker: str, action: str, qty: int, mode: str = None) ->
         "time_in_force": "day",
     }
     resp = requests.post(
-        f"{ALPACA_BASE_URL}/orders",
+        f"{_get_base_url(mode)}/orders",
         headers=headers,
         json=order_data,
         timeout=10,
@@ -193,7 +198,7 @@ def _place_bracket_order(
         "take_profit": {"limit_price": str(round(take_profit_price, 2))},
     }
     resp = requests.post(
-        f"{ALPACA_BASE_URL}/orders",
+        f"{_get_base_url(mode)}/orders",
         headers=headers,
         json=order_data,
         timeout=10,
@@ -263,7 +268,7 @@ def flatten_positions(
                 "time_in_force": "day",
             }
             resp = requests.post(
-                f"{ALPACA_BASE_URL}/orders",
+                f"{_get_base_url(mode)}/orders",
                 headers=headers,
                 json=order_data,
                 timeout=10,
@@ -446,7 +451,7 @@ def get_open_orders(status: str = "open", mode: str = None) -> list[dict]:
     """
     headers = _get_headers(mode)
     resp = requests.get(
-        f"{ALPACA_BASE_URL}/orders",
+        f"{_get_base_url(mode)}/orders",
         headers=headers,
         params={"status": status, "limit": 100},
         timeout=10,
@@ -462,7 +467,7 @@ def get_order(order_id: str, mode: str = None) -> dict:
         Full order dict (status, filled_qty, etc.) or error dict
     """
     headers = _get_headers(mode)
-    resp = requests.get(f"{ALPACA_BASE_URL}/orders/{order_id}", headers=headers, timeout=10)
+    resp = requests.get(f"{_get_base_url(mode)}/orders/{order_id}", headers=headers, timeout=10)
     if resp.status_code == 200:
         return resp.json()
     return {"success": False, "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}"}
@@ -475,7 +480,7 @@ def cancel_order(order_id: str, mode: str = None) -> dict:
         {"success": True/False, "order_id": ..., "reason": ...}
     """
     headers = _get_headers(mode)
-    resp = requests.delete(f"{ALPACA_BASE_URL}/orders/{order_id}", headers=headers, timeout=10)
+    resp = requests.delete(f"{_get_base_url(mode)}/orders/{order_id}", headers=headers, timeout=10)
     if resp.status_code in (200, 204):
         return {"success": True, "order_id": order_id}
     return {
@@ -492,7 +497,7 @@ def cancel_all_orders(mode: str = None) -> dict:
         {"success": True/False, "cancelled_count": int}
     """
     headers = _get_headers(mode)
-    resp = requests.delete(f"{ALPACA_BASE_URL}/orders", headers=headers, timeout=10)
+    resp = requests.delete(f"{_get_base_url(mode)}/orders", headers=headers, timeout=10)
     if resp.status_code in (200, 207):
         cancelled = resp.json() if resp.text else []
         return {"success": True, "cancelled_count": len(cancelled) if isinstance(cancelled, list) else 0}
@@ -522,7 +527,7 @@ def _place_limit_order(
         "time_in_force": time_in_force,
         "limit_price": str(round(limit_price, 2)),
     }
-    resp = requests.post(f"{ALPACA_BASE_URL}/orders", headers=headers, json=order_data, timeout=10)
+    resp = requests.post(f"{_get_base_url(mode)}/orders", headers=headers, json=order_data, timeout=10)
     if resp.status_code in (200, 201):
         order = resp.json()
         return {
@@ -557,7 +562,7 @@ def _place_stop_order(
         "time_in_force": time_in_force,
         "stop_price": str(round(stop_price, 2)),
     }
-    resp = requests.post(f"{ALPACA_BASE_URL}/orders", headers=headers, json=order_data, timeout=10)
+    resp = requests.post(f"{_get_base_url(mode)}/orders", headers=headers, json=order_data, timeout=10)
     if resp.status_code in (200, 201):
         order = resp.json()
         return {
@@ -594,7 +599,7 @@ def _place_trailing_stop(
         "time_in_force": time_in_force,
         "trail_percent": str(round(trail_percent, 2)),
     }
-    resp = requests.post(f"{ALPACA_BASE_URL}/orders", headers=headers, json=order_data, timeout=10)
+    resp = requests.post(f"{_get_base_url(mode)}/orders", headers=headers, json=order_data, timeout=10)
     if resp.status_code in (200, 201):
         order = resp.json()
         return {
@@ -632,7 +637,7 @@ def _place_oco_order(
         "stop_loss": {"stop_price": str(round(stop_price, 2))},
         "take_profit": {"limit_price": str(round(take_profit_price, 2))},
     }
-    resp = requests.post(f"{ALPACA_BASE_URL}/orders", headers=headers, json=order_data, timeout=10)
+    resp = requests.post(f"{_get_base_url(mode)}/orders", headers=headers, json=order_data, timeout=10)
     if resp.status_code in (200, 201):
         order = resp.json()
         return {

@@ -1,0 +1,60 @@
+# Production stack for Elestio / swarm-master
+# Runs FastAPI backend + nginx frontend (no Ollama by default).
+#
+# Usage (from repo root):
+#   cp .env.example .env   # fill keys
+#   docker compose -f docker/docker-compose.prod.yml --env-file .env up -d --build
+#
+# UI:  http://<host>:3000
+# API: http://<host>:8000
+# Docs: http://<host>:8000/docs
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    image: swarm-trader-backend:prod
+    container_name: swarm-trader-backend
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /app
+      # Do not require Ollama in production
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-OpenRouter}
+      DEFAULT_LLM_MODEL: ${DEFAULT_LLM_MODEL:-openai/gpt-4o-mini}
+      ALPACA_TRADING_MODE: ${ALPACA_TRADING_MODE:-paper}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - swarm_data:/app/data
+      - swarm_cache:/app/.cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        # Browser-reachable API URL (set to your Elestio public API URL in prod)
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    image: swarm-trader-frontend:prod
+    container_name: swarm-trader-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+
+volumes:
+  swarm_data:
+  swarm_cache:

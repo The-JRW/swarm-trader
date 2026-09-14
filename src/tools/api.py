@@ -1,5 +1,5 @@
 """
-API module — routes through free public data sources (SEC EDGAR + yfinance).
+API module — routes through market data sources (Tiingo when configured, else yfinance + SEC EDGAR).
 Original financialdatasets.ai implementation backed up as api_original.py.
 
 To revert: copy api_original.py back to api.py
