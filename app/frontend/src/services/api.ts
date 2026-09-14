@@ -8,8 +8,6 @@ import {
   HedgeFundRequest
 } from '@/services/types';
 
-const API_BASE_URL = getApiBaseUrl();
-
 export const api = {
   /**
    * Gets the list of available agents from the backend
@@ -17,7 +15,7 @@ export const api = {
    */
   getAgents: async (): Promise<Agent[]> => {
     try {
-      const response = await fetch(`${API_BASE_URL}/hedge-fund/agents`);
+      const response = await fetch(`${getApiBaseUrl()}/hedge-fund/agents`);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -35,7 +33,7 @@ export const api = {
    */
   getLanguageModels: async (): Promise<LanguageModel[]> => {
     try {
-      const response = await fetch(`${API_BASE_URL}/language-models/`);
+      const response = await fetch(`${getApiBaseUrl()}/language-models/`);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -55,7 +53,7 @@ export const api = {
    */
   saveJsonFile: async (filename: string, data: any): Promise<void> => {
     try {
-      const response = await fetch(`${API_BASE_URL}/storage/save-json`, {
+      const response = await fetch(`${getApiBaseUrl()}/storage/save-json`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -107,7 +105,7 @@ export const api = {
     const { signal } = controller;
 
     // Make a POST request with the JSON body
-    fetch(`${API_BASE_URL}/hedge-fund/run`, {
+    fetch(`${getApiBaseUrl()}/hedge-fund/run`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

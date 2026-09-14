@@ -13,7 +13,13 @@ from app.backend.services.ollama_service import ollama_service
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AI Hedge Fund API", description="Backend API for AI Hedge Fund", version="0.1.0")
+app = FastAPI(
+    title="AI Hedge Fund API",
+    description="Backend API for AI Hedge Fund",
+    version="0.1.0",
+    # Avoid 307 /api-keys → http://host/api-keys/ behind nginx path strip (/api → backend /)
+    redirect_slashes=False,
+)
 
 # Initialize database tables (this is safe to run multiple times)
 Base.metadata.create_all(bind=engine)
@@ -41,7 +47,19 @@ app.include_router(api_router)
 
 @app.on_event("startup")
 async def startup_event():
-    """Startup event to check Ollama availability."""
+    """Startup: sync env API keys into DB, then check Ollama availability."""
+    try:
+        from app.backend.database.connection import SessionLocal
+        from app.backend.services.api_key_service import ApiKeyService
+
+        db = SessionLocal()
+        try:
+            ApiKeyService(db).sync_env_api_keys()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("Could not sync env API keys into store: %s", e)
+
     try:
         logger.info("Checking Ollama availability...")
         status = await ollama_service.check_ollama_status()

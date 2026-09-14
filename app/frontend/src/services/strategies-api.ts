@@ -5,8 +5,6 @@
 
 import { getApiBaseUrl } from '@/lib/api-base';
 
-const API_BASE_URL = getApiBaseUrl();
-
 export type StrategyCategory = 'analyst' | 'risk' | 'pm';
 
 export interface Strategy {
@@ -97,19 +95,19 @@ async function parseError(response: Response): Promise<string> {
 
 export const strategiesApi = {
   listStrategies: async (): Promise<StrategiesListResponse> => {
-    const response = await fetch(`${API_BASE_URL}/strategies`);
+    const response = await fetch(`${getApiBaseUrl()}/strategies`);
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();
   },
 
   getTradingMode: async (): Promise<TradingModeResponse> => {
-    const response = await fetch(`${API_BASE_URL}/trading/mode`);
+    const response = await fetch(`${getApiBaseUrl()}/trading/mode`);
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();
   },
 
   setTradingMode: async (mode: string): Promise<TradingModeResponse> => {
-    const response = await fetch(`${API_BASE_URL}/trading/mode`, {
+    const response = await fetch(`${getApiBaseUrl()}/trading/mode`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode, reason: 'Set from Strategies UI' }),
@@ -123,7 +121,7 @@ export const strategiesApi = {
     strategy_ids: string[];
     mode: string;
   }): Promise<PaperRunCreateResponse> => {
-    const response = await fetch(`${API_BASE_URL}/runs/paper`, {
+    const response = await fetch(`${getApiBaseUrl()}/runs/paper`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...params, sync: false }),
@@ -133,13 +131,13 @@ export const strategiesApi = {
   },
 
   getRun: async (runId: string): Promise<PaperRunStatusResponse> => {
-    const response = await fetch(`${API_BASE_URL}/runs/${runId}`);
+    const response = await fetch(`${getApiBaseUrl()}/runs/${runId}`);
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();
   },
 
   portfolioGlance: async (): Promise<PortfolioGlance> => {
-    const response = await fetch(`${API_BASE_URL}/portfolio/glance`);
+    const response = await fetch(`${getApiBaseUrl()}/portfolio/glance`);
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();
   },

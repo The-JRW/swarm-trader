@@ -8,8 +8,6 @@ import {
   BacktestRequest
 } from '@/services/types';
 
-const API_BASE_URL = getApiBaseUrl();
-
 export const backtestApi = {
   /**
    * Runs a backtest simulation with the given parameters and streams the results
@@ -28,7 +26,7 @@ export const backtestApi = {
     const { signal } = controller;
 
     // Make a POST request to the backtest endpoint
-    fetch(`${API_BASE_URL}/hedge-fund/backtest`, {
+    fetch(`${getApiBaseUrl()}/hedge-fund/backtest`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
