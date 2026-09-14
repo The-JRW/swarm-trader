@@ -635,12 +635,17 @@ export function StrategiesPage() {
                             <th className="p-2">Qty</th>
                             <th className="p-2">Filled</th>
                             <th className="p-2">Avg</th>
+                            <th className="p-2">P&L</th>
                             <th className="p-2">Status</th>
                             <th className="p-2">Submitted</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {orders.map((o, i) => (
+                          {orders.map((o, i) => {
+                            const showPl = Boolean(o.is_closing) && o.realized_pl != null;
+                            const pl = o.realized_pl;
+                            const up = pl != null && pl >= 0;
+                            return (
                             <tr
                               key={`${o.symbol}-${o.submitted_at}-${i}`}
                               className="border-t border-ramp-grey-800"
@@ -650,6 +655,28 @@ export function StrategiesPage() {
                               <td className="p-2 tabular-nums">{o.qty ?? '—'}</td>
                               <td className="p-2 tabular-nums">{o.filled_qty ?? '—'}</td>
                               <td className="p-2 tabular-nums">{fmtMoney(o.filled_avg_price)}</td>
+                              <td
+                                className={cn(
+                                  'p-2 tabular-nums whitespace-nowrap',
+                                  !showPl ? 'text-muted-foreground' : up ? 'text-emerald-300' : 'text-rose-300'
+                                )}
+                              >
+                                {showPl ? (
+                                  <span className="inline-flex items-center gap-1">
+                                    {up ? (
+                                      <TrendingUp className="h-3 w-3" />
+                                    ) : (
+                                      <TrendingDown className="h-3 w-3" />
+                                    )}
+                                    {fmtMoney(pl)}
+                                    {o.realized_plpc != null ? (
+                                      <span className="text-[10px] opacity-80">({fmtPct(o.realized_plpc)})</span>
+                                    ) : null}
+                                  </span>
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
                               <td className="p-2">
                                 <Badge variant="outline" className="text-[10px]">
                                   {o.status || '—'}
@@ -666,7 +693,8 @@ export function StrategiesPage() {
                                   : '—'}
                               </td>
                             </tr>
-                          ))}
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

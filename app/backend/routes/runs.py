@@ -221,12 +221,54 @@ async def portfolio_glance():
         )
 
 
+def _order_float(v):
+    try:
+        return float(v) if v is not None and v != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_realized_pnl_by_order(mode: str) -> dict:
+    """Build order_id → realized P&L via Alpaca FILL activities (FIFO).
+
+    Falls back to closed/all order history when activities are unavailable.
+    Never invents P&L for unmatched opens.
+    """
+    from app.backend.services.order_pnl import (
+        compute_realized_pl_by_order,
+        fills_from_orders,
+    )
+    from src.alpaca_integration import get_fill_activities, get_open_orders
+
+    fills = []
+    try:
+        fills = get_fill_activities(mode=mode, page_size=100, max_pages=5, direction="asc")
+    except Exception:
+        fills = []
+
+    if not fills:
+        try:
+            # Wider history than the display window so cost basis can resolve
+            hist = get_open_orders(status="all", mode=mode, limit=200)
+            fills = fills_from_orders(hist or [])
+        except Exception:
+            fills = []
+
+    if not fills:
+        return {}
+    return compute_realized_pl_by_order(fills)
+
+
 @router.get(
     "/portfolio/orders",
     response_model=PortfolioOrdersResponse,
 )
 async def portfolio_orders(limit: int = Query(default=20, ge=1, le=50)):
-    """Recent paper orders (sanitized). Paper-only; never returns secrets."""
+    """Recent paper orders (sanitized) with realized P&L on closing fills.
+
+    Opening orders return realized_pl=null / is_closing=false (UI shows —).
+    Paper-only; never returns secrets.
+    """
     if alpaca_trading_mode() == "live":
         return PortfolioOrdersResponse(
             available=False,
@@ -252,30 +294,30 @@ async def portfolio_orders(limit: int = Query(default=20, ge=1, le=50)):
 
         try:
             raw = get_open_orders(status="all", mode=glance_mode, limit=limit)
+            pnl_mode = glance_mode
         except ValueError:
             accounts_mod._load_accounts()
             raw = get_open_orders(status="all", mode="swing", limit=limit)
+            pnl_mode = "swing"
+
+        try:
+            pnl_by_order = _load_realized_pnl_by_order(pnl_mode)
+        except Exception:
+            pnl_by_order = {}
 
         orders: list[PortfolioOrderItem] = []
         for o in raw or []:
             if not isinstance(o, dict):
                 continue
-            qty = o.get("qty")
-            filled_qty = o.get("filled_qty")
-            filled_avg = o.get("filled_avg_price")
-            try:
-                qty_f = float(qty) if qty is not None else None
-            except (TypeError, ValueError):
-                qty_f = None
-            try:
-                filled_f = float(filled_qty) if filled_qty is not None else None
-            except (TypeError, ValueError):
-                filled_f = None
-            try:
-                avg_f = float(filled_avg) if filled_avg not in (None, "") else None
-            except (TypeError, ValueError):
-                avg_f = None
+            qty_f = _order_float(o.get("qty"))
+            filled_f = _order_float(o.get("filled_qty"))
+            avg_f = _order_float(o.get("filled_avg_price"))
             submitted = o.get("submitted_at") or o.get("created_at")
+            oid = str(o.get("id") or "")
+            info = pnl_by_order.get(oid) if oid else None
+            is_closing = bool(info and info.get("is_closing"))
+            realized_pl = info.get("realized_pl") if is_closing else None
+            realized_plpc = info.get("realized_plpc") if is_closing else None
             orders.append(
                 PortfolioOrderItem(
                     symbol=o.get("symbol"),
@@ -285,6 +327,9 @@ async def portfolio_orders(limit: int = Query(default=20, ge=1, le=50)):
                     status=o.get("status"),
                     filled_avg_price=avg_f,
                     submitted_at=str(submitted) if submitted else None,
+                    realized_pl=realized_pl,
+                    realized_plpc=realized_plpc,
+                    is_closing=is_closing,
                 )
             )
 

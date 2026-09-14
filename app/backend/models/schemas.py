@@ -414,6 +414,10 @@ class PortfolioOrderItem(BaseModel):
     status: Optional[str] = None
     filled_avg_price: Optional[float] = None
     submitted_at: Optional[str] = None
+    # Closing fills only: realized vs FIFO cost basis. Opening → null / False.
+    realized_pl: Optional[float] = None
+    realized_plpc: Optional[float] = None  # fraction e.g. 0.05 = 5%
+    is_closing: bool = False
 
 
 class PortfolioOrdersResponse(BaseModel):

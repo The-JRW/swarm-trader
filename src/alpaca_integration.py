@@ -822,3 +822,51 @@ def get_alpaca_portfolio_history(
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def get_fill_activities(
+    mode: str = None,
+    page_size: int = 100,
+    max_pages: int = 5,
+    direction: str = "asc",
+) -> list[dict]:
+    """Fetch Alpaca account FILL activities (trade executions).
+
+    Returns a list of activity dicts with price/qty/side/symbol/order_id/
+    transaction_time. Never logs secrets. Paper/live URL follows account mode.
+    """
+    headers = _get_headers(mode)
+    base = _get_base_url(mode)
+    size = max(1, min(int(page_size or 100), 100))
+    pages = max(1, min(int(max_pages or 1), 10))
+    direction = "asc" if str(direction).lower() != "desc" else "desc"
+
+    out: list[dict] = []
+    page_token = None
+    for _ in range(pages):
+        params: dict = {
+            "activity_types": "FILL",
+            "page_size": size,
+            "direction": direction,
+        }
+        if page_token:
+            params["page_token"] = page_token
+        resp = requests.get(
+            f"{base}/account/activities",
+            headers=headers,
+            params=params,
+            timeout=20,
+        )
+        resp.raise_for_status()
+        batch = resp.json() or []
+        if not isinstance(batch, list) or not batch:
+            break
+        out.extend(a for a in batch if isinstance(a, dict))
+        if len(batch) < size:
+            break
+        # Alpaca page_token is the last activity id
+        last_id = batch[-1].get("id")
+        if not last_id or last_id == page_token:
+            break
+        page_token = last_id
+    return out
