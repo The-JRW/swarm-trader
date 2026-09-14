@@ -1,11 +1,11 @@
-# Elestio / swarm-master — root entrypoint
+# Elestio / swarm-master — root entrypoint (no nested docker/ paths)
 # UI :3000  API :8000
 
 services:
   backend:
     build:
       context: .
-      dockerfile: docker/Dockerfile.backend
+      dockerfile: Dockerfile.backend
     image: swarm-trader-backend:prod
     container_name: swarm-trader-backend
     restart: unless-stopped
@@ -38,9 +38,7 @@ services:
   frontend:
     build:
       context: .
-      dockerfile: docker/Dockerfile.frontend
-      args:
-        VITE_API_URL: ${VITE_API_URL:-https://swarm-master-u73408.vm.elestio.app/api}
+      dockerfile: Dockerfile.frontend
     image: swarm-trader-frontend:prod
     container_name: swarm-trader-frontend
     restart: unless-stopped
