@@ -118,6 +118,10 @@ export interface PortfolioOrder {
   status?: string | null;
   filled_avg_price?: number | null;
   submitted_at?: string | null;
+  /** Closing fills only; opening orders are null (UI shows —). */
+  realized_pl?: number | null;
+  realized_plpc?: number | null;
+  is_closing?: boolean;
 }
 
 export interface PortfolioOrdersResponse {
