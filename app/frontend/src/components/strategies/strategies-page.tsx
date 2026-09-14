@@ -20,6 +20,9 @@ import {
 import { cn } from '@/lib/utils';
 import {
   AutomationOpsStatus,
+  ConvictionDigest,
+  CronRecipe,
+  DurableRunSummary,
   PaperRunDecision,
   PaperRunStatusResponse,
   PortfolioOrder,
@@ -249,6 +252,22 @@ export function StrategiesPage() {
   const [opsLoading, setOpsLoading] = useState(false);
   const [stickyDismissed, setStickyDismissed] = useState(false);
 
+  // B1 recipe
+  const [recipe, setRecipe] = useState<CronRecipe | null>(null);
+  const [recipeTickers, setRecipeTickers] = useState('NVDA, AAPL, MSFT, AMZN, META, GOOGL, SPY');
+  const [recipePreset, setRecipePreset] = useState<PresetId>('core');
+  const [recipeMode, setRecipeMode] = useState<TradingModeChoice>('swing');
+  const [recipeSaving, setRecipeSaving] = useState(false);
+  const [executeConfirmOpen, setExecuteConfirmOpen] = useState(false);
+
+  // B5 mode override reason
+  const [overrideReason, setOverrideReason] = useState('');
+  const [useOverride, setUseOverride] = useState(true);
+  const [modeOverrideActive, setModeOverrideActive] = useState<string | null>(null);
+
+  // B2 durable history
+  const [durableHistory, setDurableHistory] = useState<DurableRunSummary[]>([]);
+
   const analystStrategies = useMemo(
     () => strategies.filter((s) => s.category === 'analyst'),
     [strategies]
@@ -315,8 +334,23 @@ export function StrategiesPage() {
   const refreshOps = useCallback(async () => {
     setOpsLoading(true);
     try {
-      const s = await strategiesApi.getAutomationStatus();
+      const [s, r, hist] = await Promise.all([
+        strategiesApi.getAutomationStatus(),
+        strategiesApi.getRecipe().catch(() => null),
+        strategiesApi.getRunHistory(50).catch(() => ({ runs: [] as DurableRunSummary[] })),
+      ]);
       setOpsStatus(s);
+      if (r) {
+        setRecipe(r);
+        setRecipeTickers((r.tickers || []).join(', '));
+        const p = (r.preset || 'core') as PresetId;
+        if (['core', 'value', 'growth', 'quant', 'custom'].includes(p)) setRecipePreset(p);
+        const m = (r.mode || 'swing').toLowerCase();
+        if (m === 'swing' || m === 'day' || m === 'auto') setRecipeMode(m);
+      } else if (s.recipe) {
+        setRecipe(s.recipe as CronRecipe);
+      }
+      setDurableHistory(hist.runs || []);
     } catch {
       setOpsStatus(null);
     } finally {
@@ -343,6 +377,8 @@ export function StrategiesPage() {
         trading.last_mode_reason ||
           (m === 'auto' ? 'UI deterministic fallback — agent VIX pick not wired' : null)
       );
+      setModeOverrideActive(trading.override || null);
+      if (trading.last_mode_reason) setOverrideReason(trading.last_mode_reason);
       applyPreset('core', list.strategies);
     } catch (e: any) {
       setError(e?.message || 'Failed to load strategies');
@@ -395,6 +431,7 @@ export function StrategiesPage() {
             const without = prev.filter((h) => h.run_id !== next.run_id);
             return [item, ...without].slice(0, HISTORY_MAX);
           });
+          void strategiesApi.getRunHistory(50).then((h) => setDurableHistory(h.runs || [])).catch(() => {});
           if (next.status === 'complete') {
             const executed = next.summary?.executed_trades;
             toast.success(executed ? 'Paper run complete — trades submitted' : 'Paper analysis complete');
@@ -437,16 +474,59 @@ export function StrategiesPage() {
   const onModeChange = async (next: TradingModeChoice) => {
     setMode(next);
     try {
-      const trading = await strategiesApi.setTradingMode(next);
+      const reason =
+        overrideReason.trim() ||
+        (useOverride ? `Human override to ${next} from Strategies UI` : `Set to ${next} from Strategies UI`);
+      const trading = await strategiesApi.setTradingMode(next, {
+        reason,
+        override: useOverride && next !== 'auto',
+      });
       const resolved = (trading.resolved_mode || 'swing').toLowerCase();
       setResolvedMode(resolved === 'day' ? 'day' : 'swing');
       setModeReason(
         trading.last_mode_reason ||
           (next === 'auto' ? 'UI deterministic fallback — agent VIX pick not wired' : null)
       );
-      toast.success(`Mode set to ${next}`);
+      setModeOverrideActive(trading.override || null);
+      toast.success(useOverride && next !== 'auto' ? `Override set to ${next}` : `Mode set to ${next}`);
     } catch (e: any) {
       toast.error(e?.message || 'Failed to set mode');
+    }
+  };
+
+  const saveRecipe = async (opts?: { execute_trades?: boolean }) => {
+    setRecipeSaving(true);
+    try {
+      const parsed = recipeTickers
+        .split(/[\s,]+/)
+        .map((t) => t.trim().toUpperCase())
+        .filter(Boolean);
+      if (parsed.length === 0) {
+        toast.error('Recipe needs at least one ticker');
+        return;
+      }
+      const body: {
+        tickers: string[];
+        preset: string;
+        mode: string;
+        execute_trades?: boolean;
+      } = {
+        tickers: parsed,
+        preset: recipePreset,
+        mode: recipeMode,
+      };
+      if (opts && 'execute_trades' in opts) {
+        body.execute_trades = opts.execute_trades;
+      }
+      const saved = await strategiesApi.putRecipe(body);
+      setRecipe(saved);
+      toast.success('Cron recipe saved');
+      await refreshOps();
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to save recipe');
+    } finally {
+      setRecipeSaving(false);
+      setExecuteConfirmOpen(false);
     }
   };
 
@@ -564,16 +644,19 @@ export function StrategiesPage() {
     }
   };
 
-  const viewHistoryRun = async (item: SessionRunHistoryItem) => {
+  const viewHistoryRun = async (item: { run_id: string }) => {
     try {
       const status = await strategiesApi.getRun(item.run_id);
       setRun(status);
       setStickyDismissed(TERMINAL.has(status.status));
       toast.message(`Showing run ${item.run_id.slice(0, 8)}`);
     } catch (e: any) {
-      toast.error(e?.message || 'Run no longer available in this session');
+      toast.error(e?.message || 'Run no longer available');
     }
   };
+
+  const convictionDigest: ConvictionDigest | null =
+    run?.conviction_digest || run?.summary?.conviction_digest || null;
 
   const decisions: PaperRunDecision[] = run?.summary?.decisions || [];
   const actionCounts = run?.summary?.action_counts || {};
@@ -914,11 +997,11 @@ export function StrategiesPage() {
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Trading mode</CardTitle>
                 <CardDescription>
-                  Swing (multi-day) or day (intraday). Auto uses deterministic UI resolution — not live
-                  VIX/agent pick.
+                  Human override wins for swing/day. Auto uses deterministic UI resolution — not live
+                  VIX/agent pick. Paper-only; never flips live Alpaca mode.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-2">
+              <CardContent className="space-y-3">
                 <div className="flex flex-wrap gap-2">
                   {(['swing', 'day', 'auto'] as TradingModeChoice[]).map((m) => (
                     <Button
@@ -932,6 +1015,35 @@ export function StrategiesPage() {
                     </Button>
                   ))}
                 </div>
+                <label className="flex items-start gap-2 text-xs cursor-pointer">
+                  <Checkbox
+                    checked={useOverride}
+                    onCheckedChange={(c) => setUseOverride(c === true)}
+                    className="mt-0.5"
+                  />
+                  <span className="text-muted-foreground">
+                    Apply as human override (wins over auto until cleared)
+                  </span>
+                </label>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-muted-foreground">Override reason</div>
+                  <Input
+                    value={overrideReason}
+                    onChange={(e) => setOverrideReason(e.target.value)}
+                    placeholder="Why are you changing mode?"
+                    className="h-8 text-sm"
+                  />
+                </div>
+                {modeOverrideActive && (
+                  <p className="text-xs text-amber-200/90">
+                    Active override: <span className="font-medium">{modeOverrideActive}</span>
+                  </p>
+                )}
+                {(modeReason || overrideReason) && (
+                  <p className="text-xs text-muted-foreground">
+                    Last reason: <span className="text-primary">{modeReason || overrideReason}</span>
+                  </p>
+                )}
                 {mode === 'auto' && (
                   <p className="text-xs text-muted-foreground">
                     Resolved mode: <span className="text-primary font-medium">{resolvedMode}</span>
@@ -1134,28 +1246,36 @@ export function StrategiesPage() {
             <CardHeader className="pb-3">
               <CardTitle className="text-base">Recent paper runs</CardTitle>
               <CardDescription>
-                Session history — clears on refresh. Not a durable archive.
+                Durable history (last 50 on disk). Single-replica — not shared across multi-replica deploys.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {runHistory.length === 0 ? (
+              {durableHistory.length === 0 && runHistory.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  No paper runs yet this session. Complete a run to see it listed here (clears on refresh).
+                  No paper runs recorded yet. Complete a Strategies or cron run to populate history.
                 </p>
               ) : (
                 <ul className="space-y-2">
-                  {runHistory.map((h) => (
+                  {(durableHistory.length > 0 ? durableHistory : runHistory.map((h) => ({
+                    run_id: h.run_id,
+                    status: h.status,
+                    mode: h.mode,
+                    instrument: h.instrument,
+                    tickers: h.tickers,
+                    created_at: h.started_at,
+                    started_at: h.started_at,
+                  }))).map((h) => (
                     <li
                       key={h.run_id}
                       className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2"
                     >
                       <div className="min-w-0">
                         <div className="text-sm font-medium truncate">
-                          {h.tickers.slice(0, 5).join(', ') || '—'}
-                          {h.tickers.length > 5 ? ` +${h.tickers.length - 5}` : ''}
+                          {(h.tickers || []).slice(0, 5).join(', ') || '—'}
+                          {(h.tickers || []).length > 5 ? ` +${(h.tickers || []).length - 5}` : ''}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {new Date(h.started_at).toLocaleString(undefined, {
+                          {new Date(h.started_at || h.created_at || '').toLocaleString(undefined, {
                             month: 'short',
                             day: 'numeric',
                             hour: '2-digit',
@@ -1163,6 +1283,9 @@ export function StrategiesPage() {
                           })}{' '}
                           · {h.mode} · {h.instrument || 'stocks'} ·{' '}
                           <span className="font-mono">{h.run_id.slice(0, 8)}</span>
+                          {'conviction_digest' in h && h.conviction_digest
+                            ? ` · Δ${h.conviction_digest.consensus_count || 0}/?${h.conviction_digest.contested_count || 0}/⛔${h.conviction_digest.risk_rejected_count || 0}`
+                            : ''}
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -1196,7 +1319,7 @@ export function StrategiesPage() {
                 <div>
                   <CardTitle className="text-base">Ops / Automation</CardTitle>
                   <CardDescription>
-                    Last cron paper-run and portfolio monitor (read-only). Paper-only; no secrets shown.
+                    Cron recipe, last paper-run, monitor, and conviction digest. Paper-only; no secrets.
                   </CardDescription>
                 </div>
                 <Button
@@ -1217,7 +1340,128 @@ export function StrategiesPage() {
                 <Badge variant={opsStatus?.monitor_dry_run_env !== false ? 'success' : 'warning'}>
                   monitor dry_run env: {opsStatus?.monitor_dry_run_env === false ? 'false (hot allowed)' : 'true'}
                 </Badge>
+                <Badge variant={opsStatus?.cron_execute_env_allows ? 'warning' : 'success'}>
+                  cron execute env: {opsStatus?.cron_execute_env_allows ? 'allows' : 'blocked (safe)'}
+                </Badge>
               </div>
+
+              <div className="rounded-lg border px-3 py-3 space-y-3">
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Cron recipe (B1)
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">Tickers</div>
+                  <Input
+                    value={recipeTickers}
+                    onChange={(e) => setRecipeTickers(e.target.value)}
+                    className="h-8 text-sm"
+                    placeholder="NVDA, AAPL, MSFT"
+                  />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {(['core', 'value', 'growth', 'quant', 'custom'] as PresetId[]).map((p) => (
+                    <Button
+                      key={p}
+                      size="sm"
+                      variant={recipePreset === p ? undefined : 'outline'}
+                      className={cn('h-7 capitalize', recipePreset === p && 'bg-blue-600 text-white')}
+                      onClick={() => setRecipePreset(p)}
+                    >
+                      {p}
+                    </Button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {(['swing', 'day', 'auto'] as TradingModeChoice[]).map((m) => (
+                    <Button
+                      key={m}
+                      size="sm"
+                      variant={recipeMode === m ? undefined : 'outline'}
+                      className={cn('h-7', recipeMode === m && 'bg-blue-600 text-white')}
+                      onClick={() => setRecipeMode(m)}
+                    >
+                      {m}
+                    </Button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <Button
+                    size="sm"
+                    className="h-8 bg-blue-600 hover:bg-blue-500 text-white"
+                    disabled={recipeSaving}
+                    onClick={() => saveRecipe()}
+                  >
+                    {recipeSaving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                    Save recipe
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8"
+                    disabled={recipeSaving}
+                    onClick={() => setExecuteConfirmOpen(true)}
+                  >
+                    Enable execute for next cron…
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 text-xs"
+                    disabled={recipeSaving || !recipe?.execute_trades}
+                    onClick={() => saveRecipe({ execute_trades: false })}
+                  >
+                    Clear execute flag
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Recipe execute_trades: <strong>{String(recipe?.execute_trades ?? false)}</strong>
+                  {' · '}
+                  Effective next cron:{' '}
+                  <strong>
+                    {String(
+                      Boolean(recipe?.execute_trades) && Boolean(opsStatus?.cron_execute_env_allows)
+                    )}
+                  </strong>
+                  {' '}
+                  (dual gate: recipe + SWARM_CRON_EXECUTE_TRADES)
+                </p>
+              </div>
+
+              <div className="rounded-lg border px-3 py-2 space-y-1">
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Last conviction digest
+                </div>
+                {opsStatus?.last_conviction_digest ? (
+                  <div className="text-xs text-muted-foreground space-y-1">
+                    <div>
+                      consensus {(opsStatus.last_conviction_digest.consensus || []).length}
+                      {' · '}contested {(opsStatus.last_conviction_digest.contested || []).length}
+                      {' · '}risk-rejected {(opsStatus.last_conviction_digest.risk_rejected || []).length}
+                      {opsStatus.last_conviction_digest_meta?.run_id
+                        ? ` · run ${opsStatus.last_conviction_digest_meta.run_id.slice(0, 8)}`
+                        : ''}
+                    </div>
+                    <ul className="space-y-0.5 max-h-28 overflow-auto font-mono">
+                      {(opsStatus.last_conviction_digest.consensus || []).slice(0, 6).map((c) => (
+                        <li key={`c-${c.ticker}`}>
+                          ✓ {c.ticker} {c.direction} ({c.agree}/{c.total})
+                        </li>
+                      ))}
+                      {(opsStatus.last_conviction_digest.contested || []).slice(0, 4).map((c) => (
+                        <li key={`x-${c.ticker}`}>
+                          ? {c.ticker} bull {c.bullish} / bear {c.bearish}
+                        </li>
+                      ))}
+                      {(opsStatus.last_conviction_digest.risk_rejected || []).slice(0, 4).map((c) => (
+                        <li key={`r-${c.ticker}`}>⛔ {c.ticker} — {c.reason}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No digest yet — complete a paper run.</p>
+                )}
+              </div>
+
               <div className="rounded-lg border px-3 py-2 space-y-1">
                 <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                   Last cron paper-run
@@ -1278,6 +1522,33 @@ export function StrategiesPage() {
             </CardContent>
           </Card>
 
+          <Dialog open={executeConfirmOpen} onOpenChange={setExecuteConfirmOpen}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Enable execute_trades for next cron?</DialogTitle>
+                <DialogDescription>
+                  This sets recipe execute_trades=true. Cron will still force false unless env
+                  SWARM_CRON_EXECUTE_TRADES is truthy (dual gate). Paper-only — never live.
+                  {opsStatus?.cron_execute_env_allows
+                    ? ' Env currently ALLOWS execute.'
+                    : ' Env currently BLOCKS execute (safe).'}
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter className="gap-2 sm:gap-0">
+                <Button variant="outline" onClick={() => setExecuteConfirmOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  className="bg-amber-600 hover:bg-amber-500 text-white"
+                  disabled={recipeSaving}
+                  onClick={() => saveRecipe({ execute_trades: true })}
+                >
+                  Confirm enable
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
           {run && (
             <Card className="overflow-hidden">
               <CardHeader className="pb-3 border-b border-ramp-grey-800/80 bg-ramp-grey-800/20">
@@ -1316,6 +1587,40 @@ export function StrategiesPage() {
                 {run.summary?.execute_blocked_reason && (
                   <div className="text-sm text-amber-200 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
                     {run.summary.execute_blocked_reason}
+                  </div>
+                )}
+
+                {convictionDigest && (
+                  <div className="rounded-lg border px-3 py-3 space-y-2">
+                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Conviction digest (from agent signals)
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      <Badge variant="success">
+                        consensus {(convictionDigest.consensus || []).length}
+                      </Badge>
+                      <Badge variant="warning">
+                        contested {(convictionDigest.contested || []).length}
+                      </Badge>
+                      <Badge variant="destructive">
+                        risk-rejected {(convictionDigest.risk_rejected || []).length}
+                      </Badge>
+                    </div>
+                    <ul className="text-xs font-mono space-y-0.5 max-h-36 overflow-auto">
+                      {(convictionDigest.consensus || []).map((c) => (
+                        <li key={`rc-${c.ticker}`}>
+                          ✓ {c.ticker} agree {c.direction} ({c.agree}/{c.total})
+                        </li>
+                      ))}
+                      {(convictionDigest.contested || []).map((c) => (
+                        <li key={`rx-${c.ticker}`}>
+                          ? {c.ticker} bull {c.bullish} / bear {c.bearish} / neu {c.neutral}
+                        </li>
+                      ))}
+                      {(convictionDigest.risk_rejected || []).map((c) => (
+                        <li key={`rr-${c.ticker}`}>⛔ {c.ticker} — {c.reason}</li>
+                      ))}
+                    </ul>
                   </div>
                 )}
 

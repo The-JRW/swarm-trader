@@ -2,7 +2,7 @@
 
 Paper-only weekday automation for **The-JRW/swarm-trader**. Reviewer Phase 1 binding constraints apply: no live trading from these paths.
 
-Image tag: `strategies-ux-9`
+Image tag: `strategies-ux-10` (see also `CONTROL_WAVE_B.md`)
 
 ## Secrets (Elestio)
 
@@ -10,6 +10,7 @@ Image tag: `strategies-ux-9`
 |-----|----------|--------|
 | `SWARM_CRON_SECRET` | **Yes** for `/cron/*` | Set in Elestio env UI. Header `X-Swarm-Cron-Secret`. Never commit a real value. |
 | `SWARM_MONITOR_DRY_RUN` | Recommended | Default `true`. Hot monitor sells only when this is `false` **and** body `dry_run=false`. |
+| `SWARM_CRON_EXECUTE_TRADES` | Recommended | Default unset/false. Cron execute only when truthy **and** recipe/body `execute_trades=true` (dual gate). |
 | `ALPACA_API_KEY` / `ALPACA_API_SECRET` | Yes | Paper keys. |
 | `ALPACA_TRADING_MODE` | Safety | Must stay `paper`. Live → FAIL_CLOSED. |
 | `GIT_SHA` | Optional | Wired into `/build-info` via compose + Dockerfile build-arg. |
@@ -43,7 +44,8 @@ Base: `https://<host>` (UI proxies `/api` → backend). Examples use `/api/cron/
 - `strategy_ids`: CORE analysts only
 - `mode`: `resolve_mode()` / swing
 - `tickers`: swing `core_tech` universe (capped) or liquid set `NVDA,AAPL,MSFT,AMZN,META,GOOGL,SPY`
-- `execute_trades`: **false** (analysis-only) unless body or `?execute_trades=true`
+- `execute_trades`: **false** unless recipe/body/query true **and** `SWARM_CRON_EXECUTE_TRADES` truthy (dual gate)
+- Omitted body fields fall back to `/api/automation/recipe`
 
 **Store assumption:** run status uses the **single-worker in-memory** store (`paper_run_service`). Not shared across replicas; lost on restart. Prefer one backend replica for cron paper-runs.
 
@@ -130,5 +132,7 @@ Written under `/app/data/automation/` (compose volume `swarm_data`):
 - `last_paper_run.json`
 - `last_monitor.json`
 - `ops_status.json`
+- `cron_recipe.json` (B1 — tickers/preset/mode/execute_trades; no secrets)
+- `last_conviction_digest.json` (B3)
 
-No secrets in these files.
+No secrets in these files. Control Wave B details: `CONTROL_WAVE_B.md`.

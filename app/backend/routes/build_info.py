@@ -43,5 +43,11 @@ async def build_info():
             "orders-closing-pnl",
             "phase3-gui-wave1",
             "a1-a2-automation",
+            "control-wave-b",
+            "ops-recipe",
+            "durable-run-history",
+            "conviction-digest",
+            "performance-snapshots",
+            "mode-override-ux",
         ],
     }

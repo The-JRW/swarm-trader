@@ -393,6 +393,7 @@ class PaperRunStatusResponse(BaseModel):
     error: Optional[str] = None
     summary: Optional[Dict[str, Any]] = None
     decisions: Optional[Dict[str, Any]] = None
+    conviction_digest: Optional[dict] = None
 
 
 class PortfolioGlanceResponse(BaseModel):
@@ -539,5 +540,6 @@ class PortfolioPerformanceResponse(BaseModel):
     message: Optional[str] = None
     as_of: Optional[str] = None  # ISO timestamp of successful fetch
     spy_alpha: Optional[float] = None  # omit unless real SPY data exists
+    snapshot_as_of: Optional[str] = None  # timestamp/date of last performance snapshot when present
 
 

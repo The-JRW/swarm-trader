@@ -179,10 +179,23 @@ export function PerformanceDashboard({ className }: { className?: string }) {
         </span>
       )}
 
+      {data?.snapshot_as_of && (
+        <span
+          className="text-[10px] text-muted-foreground/70 whitespace-nowrap px-1 shrink-0"
+          title={`Last performance snapshot: ${data.snapshot_as_of}`}
+        >
+          snap {fmtAsOf(data.snapshot_as_of) || data.snapshot_as_of}
+        </span>
+      )}
+
       <button
         type="button"
         className="text-[10px] text-muted-foreground/60 px-1 shrink-0 cursor-default"
-        title="Snapshot history coming soon"
+        title={
+          data?.spy_alpha != null
+            ? `α vs SPY from real snapshots: ${data.spy_alpha}`
+            : 'α vs SPY shown only when real snapshot/benchmark data exists'
+        }
         disabled
       >
         Details

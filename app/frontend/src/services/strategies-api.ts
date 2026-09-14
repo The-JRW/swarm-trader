@@ -74,8 +74,10 @@ export interface PaperRunStatusResponse {
     executed_trades?: boolean;
     execute_blocked_reason?: string | null;
     trade_results?: Array<Record<string, unknown>>;
+    conviction_digest?: ConvictionDigest | null;
   } | null;
   decisions?: Record<string, unknown> | null;
+  conviction_digest?: ConvictionDigest | null;
 }
 
 export interface PortfolioGlance {
@@ -114,6 +116,8 @@ export interface PortfolioPerformance {
   as_of?: string | null;
   /** Overall SPY alpha when real data exists; omit/null otherwise — never fake zeros */
   spy_alpha?: number | null;
+  /** Timestamp/date of last performance snapshot when present */
+  snapshot_as_of?: string | null;
 }
 
 export interface PortfolioOrder {
@@ -177,10 +181,73 @@ export interface PortfolioCloseResponse {
 }
 
 
+export interface ConvictionDigest {
+  consensus?: Array<{
+    ticker: string;
+    direction: string;
+    agree?: number;
+    total?: number;
+    signals?: Array<{ agent: string; signal: string }>;
+  }>;
+  contested?: Array<{
+    ticker: string;
+    bullish?: number;
+    bearish?: number;
+    neutral?: number;
+    signals?: Array<{ agent: string; signal: string }>;
+  }>;
+  risk_rejected?: Array<{
+    ticker: string;
+    reason?: string;
+    remaining_position_limit?: number;
+  }>;
+  ticker_count?: number;
+  source?: string;
+}
+
+export interface CronRecipe {
+  tickers: string[];
+  preset: string;
+  mode: string;
+  execute_trades: boolean;
+  updated_at?: string | null;
+  paper_only?: boolean;
+  cron_execute_env_allows?: boolean;
+  effective_execute_trades?: boolean;
+  note?: string;
+}
+
+export interface DurableRunSummary {
+  run_id: string;
+  status: string;
+  mode?: string;
+  instrument?: string;
+  tickers?: string[];
+  execute_trades?: boolean;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  error?: string | null;
+  action_counts?: Record<string, number> | null;
+  conviction_digest?: {
+    consensus_count?: number;
+    contested_count?: number;
+    risk_rejected_count?: number;
+  } | null;
+  paper?: boolean;
+}
+
 export interface AutomationOpsStatus {
   paper_only: boolean;
   monitor_dry_run_env: boolean;
+  cron_execute_env_allows?: boolean;
   updated_at?: string | null;
+  recipe?: CronRecipe | null;
+  last_conviction_digest?: ConvictionDigest | null;
+  last_conviction_digest_meta?: {
+    run_id?: string | null;
+    updated_at?: string | null;
+  } | null;
   last_paper_run?: {
     run_id?: string | null;
     status?: string | null;
@@ -190,6 +257,7 @@ export interface AutomationOpsStatus {
     created_at?: string | null;
     message?: string | null;
     store_note?: string | null;
+    conviction_digest?: ConvictionDigest | null;
   } | null;
   last_monitor?: {
     timestamp?: string | null;
@@ -231,11 +299,19 @@ export const strategiesApi = {
     return response.json();
   },
 
-  setTradingMode: async (mode: string): Promise<TradingModeResponse> => {
+  setTradingMode: async (
+    mode: string,
+    opts?: { reason?: string; override?: boolean; override_hours?: number | null }
+  ): Promise<TradingModeResponse> => {
     const response = await fetch(`${getApiBaseUrl()}/trading/mode`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode, reason: 'Set from Strategies UI' }),
+      body: JSON.stringify({
+        mode,
+        reason: opts?.reason || 'Set from Strategies UI',
+        override: opts?.override === true,
+        override_hours: opts?.override_hours ?? null,
+      }),
     });
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();
@@ -321,6 +397,39 @@ export const strategiesApi = {
   },
   getAutomationStatus: async (): Promise<AutomationOpsStatus> => {
     const response = await fetch(`${getApiBaseUrl()}/automation/status`);
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  getRecipe: async (): Promise<CronRecipe> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/recipe`);
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  putRecipe: async (body: {
+    tickers?: string[];
+    preset?: string;
+    mode?: string;
+    execute_trades?: boolean;
+  }): Promise<CronRecipe> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/recipe`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  getRunHistory: async (limit = 50): Promise<{
+    runs: DurableRunSummary[];
+    count: number;
+    note?: string;
+  }> => {
+    const response = await fetch(
+      `${getApiBaseUrl()}/runs/history?limit=${encodeURIComponent(String(limit))}`
+    );
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();
   },
