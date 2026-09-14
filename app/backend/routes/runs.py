@@ -54,7 +54,12 @@ async def start_paper_run(body: PaperRunRequest):
         raise HTTPException(status_code=400, detail="mode must be swing, day, or auto")
 
     strategy_ids = body.strategy_ids or []
-    run_id = create_run_record(body.tickers, strategy_ids, mode)
+    run_id = create_run_record(
+        body.tickers,
+        strategy_ids,
+        mode,
+        execute_trades=bool(body.execute_trades),
+    )
 
     if body.sync:
         result = execute_paper_run(run_id)
@@ -103,10 +108,26 @@ async def portfolio_glance():
             message="Server Alpaca keys not configured",
         )
     try:
+        from src import accounts as accounts_mod
         from src.alpaca_integration import get_alpaca_account, get_alpaca_positions
 
-        account = get_alpaca_account()
-        positions = get_alpaca_positions()
+        # Prefer resolved/swing mode so day-only missing keys do not ValueError
+        glance_mode = resolve_mode()
+        if glance_mode == "auto" or glance_mode not in ("swing", "day"):
+            glance_mode = "swing"
+
+        if not accounts_mod.get_all_accounts():
+            accounts_mod._load_accounts()
+
+        try:
+            account = get_alpaca_account(glance_mode)
+            positions = get_alpaca_positions(glance_mode)
+        except ValueError:
+            # Day missing → prefer swing (or vice versa via accounts fallback)
+            accounts_mod._load_accounts()
+            account = get_alpaca_account("swing")
+            positions = get_alpaca_positions("swing")
+
         return PortfolioGlanceResponse(
             available=True,
             paper=alpaca_trading_mode() != "live",

@@ -66,6 +66,7 @@ export interface PaperRunStatusResponse {
     decisions?: PaperRunDecision[];
     paper?: boolean;
     executed_trades?: boolean;
+    trade_results?: Array<Record<string, unknown>>;
   } | null;
   decisions?: Record<string, unknown> | null;
 }
@@ -120,11 +121,16 @@ export const strategiesApi = {
     tickers: string[];
     strategy_ids: string[];
     mode: string;
+    execute_trades?: boolean;
   }): Promise<PaperRunCreateResponse> => {
     const response = await fetch(`${getApiBaseUrl()}/runs/paper`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...params, sync: false }),
+      body: JSON.stringify({
+        ...params,
+        sync: false,
+        execute_trades: params.execute_trades === true,
+      }),
     });
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();

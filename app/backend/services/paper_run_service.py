@@ -93,7 +93,12 @@ def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
 
-def create_run_record(tickers: List[str], strategy_ids: List[str], mode: str) -> str:
+def create_run_record(
+    tickers: List[str],
+    strategy_ids: List[str],
+    mode: str,
+    execute_trades: bool = False,
+) -> str:
     run_id = str(uuid.uuid4())
     record = {
         "run_id": run_id,
@@ -101,6 +106,7 @@ def create_run_record(tickers: List[str], strategy_ids: List[str], mode: str) ->
         "mode": mode,
         "tickers": tickers,
         "strategy_ids": strategy_ids,
+        "execute_trades": bool(execute_trades),
         "created_at": _now_iso(),
         "started_at": None,
         "completed_at": None,
@@ -170,6 +176,75 @@ def _try_live_portfolio(tickers: List[str], mode: str) -> dict:
     except Exception as e:
         logger.warning("Paper run: could not load Alpaca portfolio (%s); using empty book", type(e).__name__)
         return _build_empty_portfolio(tickers)
+
+
+
+def _sanitize_trade_result(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep order metadata only — never include secrets or raw headers."""
+    if not isinstance(row, dict):
+        return {"success": False, "reason": "invalid_result"}
+    keep = (
+        "ticker",
+        "action",
+        "qty",
+        "quantity",
+        "confidence",
+        "success",
+        "skipped",
+        "dry_run",
+        "order_id",
+        "status",
+        "reason",
+        "rule",
+        "order_type",
+        "order_class",
+        "stop_price",
+        "take_profit_price",
+        "limit_price",
+        "trail_percent",
+        "side",
+    )
+    out = {k: row[k] for k in keep if k in row}
+    # Truncate free-text fields
+    if "reason" in out and isinstance(out["reason"], str):
+        out["reason"] = out["reason"][:300]
+    if "reasoning" in row and isinstance(row.get("reasoning"), str):
+        out["reasoning"] = row["reasoning"][:200]
+    return out
+
+
+def _execute_paper_decisions(decisions: dict, mode: str) -> List[Dict[str, Any]]:
+    """Place paper orders via alpaca_integration.execute_decisions. Never logs secrets."""
+    from src.alpaca_integration import (
+        execute_decisions,
+        get_alpaca_account,
+        get_alpaca_positions,
+    )
+
+    account_mode = mode if mode in ("swing", "day") else "swing"
+    try:
+        account = get_alpaca_account(account_mode)
+        positions = get_alpaca_positions(account_mode)
+    except Exception as e:
+        logger.warning(
+            "Paper execute: portfolio fetch failed (%s); retrying swing",
+            type(e).__name__,
+        )
+        from src import accounts as accounts_mod
+
+        accounts_mod._load_accounts()
+        account = get_alpaca_account("swing")
+        positions = get_alpaca_positions("swing")
+        account_mode = "swing"
+
+    raw = execute_decisions(
+        decisions,
+        positions_raw=positions or [],
+        account=account or {},
+        dry_run=False,
+        mode=account_mode,
+    )
+    return [_sanitize_trade_result(r) for r in (raw or [])]
 
 
 def execute_paper_run(run_id: str) -> Dict[str, Any]:
@@ -273,6 +348,21 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
                 }
             )
 
+        want_execute = bool(rec.get("execute_trades"))
+        trade_results: List[Dict[str, Any]] = []
+        executed = False
+
+        if want_execute:
+            # Refuse live again at execution time (belt + suspenders)
+            assert_paper_only()
+            trade_results = _execute_paper_decisions(decisions, mode)
+            executed = True
+            logger.info(
+                "Paper run %s executed %d trade result(s)",
+                run_id,
+                len(trade_results),
+            )
+
         summary = {
             "mode": mode,
             "ticker_count": len(tickers),
@@ -281,7 +371,8 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
             "signals_agents": list(analyst_signals.keys())[:30],
             "decisions": decision_rows,
             "paper": True,
-            "executed_trades": False,
+            "executed_trades": executed,
+            "trade_results": trade_results,
         }
 
         _update_run(
