@@ -338,6 +338,22 @@ class PaperRunRequest(BaseModel):
         default=False,
         description="If true, place paper orders after analysis (PAPER ONLY; refused when live)",
     )
+    instrument: str = Field(
+        default="stocks",
+        description="stocks | options — user instrument mode (user override wins for execution)",
+    )
+
+    @field_validator("instrument")
+    @classmethod
+    def normalize_instrument(cls, v: str) -> str:
+        val = str(v or "stocks").strip().lower()
+        if val in ("stock", "equity", "equities"):
+            val = "stocks"
+        if val in ("option",):
+            val = "options"
+        if val not in ("stocks", "options"):
+            raise ValueError("instrument must be stocks or options")
+        return val
 
     @field_validator("tickers")
     @classmethod
@@ -368,6 +384,7 @@ class PaperRunStatusResponse(BaseModel):
     run_id: str
     status: str  # queued | running | complete | error | fail_closed
     mode: Optional[str] = None
+    instrument: Optional[str] = None  # stocks | options
     tickers: Optional[List[str]] = None
     strategy_ids: Optional[List[str]] = None
     created_at: Optional[str] = None
@@ -386,3 +403,109 @@ class PortfolioGlanceResponse(BaseModel):
     buying_power: Optional[float] = None
     positions_count: Optional[int] = None
     message: Optional[str] = None
+
+
+class PortfolioOrderItem(BaseModel):
+    """Sanitized paper order — no secrets or account identifiers."""
+    symbol: Optional[str] = None
+    side: Optional[str] = None
+    qty: Optional[float] = None
+    filled_qty: Optional[float] = None
+    status: Optional[str] = None
+    filled_avg_price: Optional[float] = None
+    submitted_at: Optional[str] = None
+
+
+class PortfolioOrdersResponse(BaseModel):
+    available: bool
+    paper: bool = True
+    orders: List[PortfolioOrderItem] = Field(default_factory=list)
+    message: Optional[str] = None
+
+
+class PortfolioPositionItem(BaseModel):
+    """Sanitized open position for Strategies portfolio strip."""
+    symbol: str
+    side: str  # long | short
+    qty: float
+    market_value: Optional[float] = None
+    unrealized_pl: Optional[float] = None
+    unrealized_plpc: Optional[float] = None  # fraction e.g. 0.05 = 5%
+    current_price: Optional[float] = None
+    avg_entry_price: Optional[float] = None
+
+
+class PortfolioPositionsResponse(BaseModel):
+    available: bool
+    paper: bool = True
+    cash: Optional[float] = None
+    equity: Optional[float] = None
+    buying_power: Optional[float] = None
+    positions_count: Optional[int] = None
+    positions: List[PortfolioPositionItem] = Field(default_factory=list)
+    message: Optional[str] = None
+
+
+class PortfolioCloseRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=16)
+    percent: Optional[float] = Field(
+        default=100.0,
+        description="Percent of position to close (1–100). Default 100 = full close.",
+    )
+    qty: Optional[float] = Field(
+        default=None,
+        description="Exact shares to close; overrides percent when set.",
+    )
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, v: str) -> str:
+        sym = str(v or "").strip().upper()
+        if not sym or not sym.replace(".", "").isalnum():
+            raise ValueError(f"Invalid symbol: {v}")
+        return sym
+
+    @field_validator("percent")
+    @classmethod
+    def validate_percent(cls, v: Optional[float]) -> Optional[float]:
+        if v is None:
+            return 100.0
+        if v <= 0 or v > 100:
+            raise ValueError("percent must be in (0, 100]")
+        return float(v)
+
+
+class PortfolioCloseBatchItem(BaseModel):
+    symbol: str
+    percent: Optional[float] = 100.0
+    qty: Optional[float] = None
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, v: str) -> str:
+        sym = str(v or "").strip().upper()
+        if not sym or not sym.replace(".", "").isalnum():
+            raise ValueError(f"Invalid symbol: {v}")
+        return sym
+
+
+class PortfolioCloseBatchRequest(BaseModel):
+    items: List[PortfolioCloseBatchItem] = Field(..., min_length=1, max_length=50)
+
+
+class PortfolioCloseResult(BaseModel):
+    success: bool
+    symbol: str
+    side: Optional[str] = None
+    qty: Optional[float] = None
+    status: Optional[str] = None
+    order_id: Optional[str] = None
+    reason: Optional[str] = None
+    dry_run: Optional[bool] = None
+
+
+class PortfolioCloseResponse(BaseModel):
+    paper: bool = True
+    results: List[PortfolioCloseResult] = Field(default_factory=list)
+    message: Optional[str] = None
+

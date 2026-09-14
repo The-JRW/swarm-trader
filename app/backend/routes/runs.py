@@ -1,13 +1,21 @@
 """Paper analysis runs for the Strategies UI."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.backend.models.schemas import (
     ErrorResponse,
     PaperRunCreateResponse,
     PaperRunRequest,
     PaperRunStatusResponse,
+    PortfolioCloseBatchRequest,
+    PortfolioCloseRequest,
+    PortfolioCloseResponse,
+    PortfolioCloseResult,
     PortfolioGlanceResponse,
+    PortfolioOrderItem,
+    PortfolioOrdersResponse,
+    PortfolioPositionItem,
+    PortfolioPositionsResponse,
 )
 from app.backend.services.paper_run_service import (
     alpaca_trading_mode,
@@ -20,6 +28,58 @@ from app.backend.services.paper_run_service import (
 from src.config import resolve_mode
 
 router = APIRouter()
+
+
+def _paper_mode_or_refuse():
+    """Return (ok, glance_mode, error_message). Refuse live trading."""
+    if alpaca_trading_mode() == "live":
+        return False, None, "Paper-only: ALPACA_TRADING_MODE=live refused"
+    if not has_alpaca_keys():
+        return False, None, "Server Alpaca keys not configured"
+    glance_mode = resolve_mode()
+    if glance_mode == "auto" or glance_mode not in ("swing", "day"):
+        glance_mode = "swing"
+    return True, glance_mode, None
+
+
+def _load_account_positions(glance_mode: str):
+    from src import accounts as accounts_mod
+    from src.alpaca_integration import get_alpaca_account, get_alpaca_positions
+
+    if not accounts_mod.get_all_accounts():
+        accounts_mod._load_accounts()
+    try:
+        account = get_alpaca_account(glance_mode)
+        positions = get_alpaca_positions(glance_mode)
+        return account, positions, glance_mode
+    except ValueError:
+        accounts_mod._load_accounts()
+        return get_alpaca_account("swing"), get_alpaca_positions("swing"), "swing"
+
+
+def _sanitize_position(pos: dict) -> PortfolioPositionItem:
+    qty = float(pos.get("qty") or 0)
+    side = str(pos.get("side") or ("long" if qty >= 0 else "short")).lower()
+    if side not in ("long", "short"):
+        side = "long" if qty >= 0 else "short"
+
+    def _f(key):
+        v = pos.get(key)
+        try:
+            return float(v) if v is not None and v != "" else None
+        except (TypeError, ValueError):
+            return None
+
+    return PortfolioPositionItem(
+        symbol=str(pos.get("symbol") or "").upper(),
+        side=side,
+        qty=abs(qty),
+        market_value=_f("market_value"),
+        unrealized_pl=_f("unrealized_pl"),
+        unrealized_plpc=_f("unrealized_plpc"),
+        current_price=_f("current_price"),
+        avg_entry_price=_f("avg_entry_price"),
+    )
 
 
 @router.post(
@@ -54,11 +114,26 @@ async def start_paper_run(body: PaperRunRequest):
         raise HTTPException(status_code=400, detail="mode must be swing, day, or auto")
 
     strategy_ids = body.strategy_ids or []
+    instrument = (getattr(body, "instrument", None) or "stocks").strip().lower()
+    if instrument not in ("stocks", "options"):
+        instrument = "stocks"
+
+    # Options + execute: allow research run but refuse execution up-front with clear message
+    if bool(body.execute_trades) and instrument == "options":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Options paper execute not wired yet — research-only. "
+                "Uncheck Execute paper trades or switch instrument to Stocks."
+            ),
+        )
+
     run_id = create_run_record(
         body.tickers,
         strategy_ids,
         mode,
         execute_trades=bool(body.execute_trades),
+        instrument=instrument,
     )
 
     if body.sync:
@@ -142,3 +217,206 @@ async def portfolio_glance():
             paper=True,
             message=f"Could not load portfolio ({type(e).__name__})",
         )
+
+
+@router.get(
+    "/portfolio/orders",
+    response_model=PortfolioOrdersResponse,
+)
+async def portfolio_orders(limit: int = Query(default=20, ge=1, le=50)):
+    """Recent paper orders (sanitized). Paper-only; never returns secrets."""
+    if alpaca_trading_mode() == "live":
+        return PortfolioOrdersResponse(
+            available=False,
+            paper=False,
+            message="Orders strip is paper-only (ALPACA_TRADING_MODE=live refused)",
+        )
+    if not has_alpaca_keys():
+        return PortfolioOrdersResponse(
+            available=False,
+            paper=True,
+            message="Server Alpaca keys not configured",
+        )
+    try:
+        from src import accounts as accounts_mod
+        from src.alpaca_integration import get_open_orders
+
+        glance_mode = resolve_mode()
+        if glance_mode == "auto" or glance_mode not in ("swing", "day"):
+            glance_mode = "swing"
+
+        if not accounts_mod.get_all_accounts():
+            accounts_mod._load_accounts()
+
+        try:
+            raw = get_open_orders(status="all", mode=glance_mode, limit=limit)
+        except ValueError:
+            accounts_mod._load_accounts()
+            raw = get_open_orders(status="all", mode="swing", limit=limit)
+
+        orders: list[PortfolioOrderItem] = []
+        for o in raw or []:
+            if not isinstance(o, dict):
+                continue
+            qty = o.get("qty")
+            filled_qty = o.get("filled_qty")
+            filled_avg = o.get("filled_avg_price")
+            try:
+                qty_f = float(qty) if qty is not None else None
+            except (TypeError, ValueError):
+                qty_f = None
+            try:
+                filled_f = float(filled_qty) if filled_qty is not None else None
+            except (TypeError, ValueError):
+                filled_f = None
+            try:
+                avg_f = float(filled_avg) if filled_avg not in (None, "") else None
+            except (TypeError, ValueError):
+                avg_f = None
+            submitted = o.get("submitted_at") or o.get("created_at")
+            orders.append(
+                PortfolioOrderItem(
+                    symbol=o.get("symbol"),
+                    side=o.get("side"),
+                    qty=qty_f,
+                    filled_qty=filled_f,
+                    status=o.get("status"),
+                    filled_avg_price=avg_f,
+                    submitted_at=str(submitted) if submitted else None,
+                )
+            )
+
+        return PortfolioOrdersResponse(
+            available=True,
+            paper=True,
+            orders=orders[:limit],
+        )
+    except Exception as e:
+        return PortfolioOrdersResponse(
+            available=False,
+            paper=True,
+            message=f"Could not load orders ({type(e).__name__})",
+        )
+
+
+@router.get(
+    "/portfolio/positions",
+    response_model=PortfolioPositionsResponse,
+)
+async def portfolio_positions():
+    """Detailed paper positions for Strategies strip (sanitized)."""
+    ok, glance_mode, msg = _paper_mode_or_refuse()
+    if not ok:
+        return PortfolioPositionsResponse(
+            available=False,
+            paper=alpaca_trading_mode() != "live",
+            message=msg,
+        )
+    try:
+        account, positions, _mode = _load_account_positions(glance_mode)
+        items = [_sanitize_position(p) for p in (positions or []) if isinstance(p, dict)]
+        return PortfolioPositionsResponse(
+            available=True,
+            paper=True,
+            cash=float(account.get("cash") or 0),
+            equity=float(account.get("equity") or account.get("portfolio_value") or 0),
+            buying_power=float(account.get("buying_power") or 0),
+            positions_count=len(items),
+            positions=items,
+        )
+    except Exception as e:
+        return PortfolioPositionsResponse(
+            available=False,
+            paper=True,
+            message=f"Could not load positions ({type(e).__name__})",
+        )
+
+
+@router.post(
+    "/portfolio/close",
+    response_model=PortfolioCloseResponse,
+    responses={403: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def portfolio_close(body: PortfolioCloseRequest):
+    """Close (partial or full) one paper position. Refuses live."""
+    if alpaca_trading_mode() == "live":
+        raise HTTPException(status_code=403, detail="FAIL_CLOSED: paper-only close refused for live mode")
+    ok, glance_mode, msg = _paper_mode_or_refuse()
+    if not ok:
+        raise HTTPException(status_code=503, detail=msg or "Unavailable")
+    try:
+        from src.alpaca_integration import close_position
+
+        # Ensure accounts loaded
+        _load_account_positions(glance_mode)
+        result = close_position(
+            body.symbol,
+            percent=body.percent if body.qty is None else None,
+            qty=body.qty,
+            mode=glance_mode,
+            dry_run=False,
+        )
+        return PortfolioCloseResponse(
+            paper=True,
+            results=[
+                PortfolioCloseResult(
+                    success=bool(result.get("success")),
+                    symbol=str(result.get("symbol") or body.symbol),
+                    side=result.get("side"),
+                    qty=result.get("qty"),
+                    status=result.get("status"),
+                    order_id=result.get("order_id"),
+                    reason=result.get("reason"),
+                    dry_run=result.get("dry_run"),
+                )
+            ],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Close failed ({type(e).__name__})")
+
+
+@router.post(
+    "/portfolio/close-batch",
+    response_model=PortfolioCloseResponse,
+    responses={403: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def portfolio_close_batch(body: PortfolioCloseBatchRequest):
+    """Close multiple paper positions (partial or full). Refuses live."""
+    if alpaca_trading_mode() == "live":
+        raise HTTPException(status_code=403, detail="FAIL_CLOSED: paper-only close refused for live mode")
+    ok, glance_mode, msg = _paper_mode_or_refuse()
+    if not ok:
+        raise HTTPException(status_code=503, detail=msg or "Unavailable")
+    try:
+        from src.alpaca_integration import close_position
+
+        _load_account_positions(glance_mode)
+        results = []
+        for item in body.items:
+            result = close_position(
+                item.symbol,
+                percent=item.percent if item.qty is None else None,
+                qty=item.qty,
+                mode=glance_mode,
+                dry_run=False,
+            )
+            results.append(
+                PortfolioCloseResult(
+                    success=bool(result.get("success")),
+                    symbol=str(result.get("symbol") or item.symbol),
+                    side=result.get("side"),
+                    qty=result.get("qty"),
+                    status=result.get("status"),
+                    order_id=result.get("order_id"),
+                    reason=result.get("reason"),
+                    dry_run=result.get("dry_run"),
+                )
+            )
+        return PortfolioCloseResponse(paper=True, results=results)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Close-batch failed ({type(e).__name__})")
+

@@ -98,12 +98,17 @@ def create_run_record(
     strategy_ids: List[str],
     mode: str,
     execute_trades: bool = False,
+    instrument: str = "stocks",
 ) -> str:
     run_id = str(uuid.uuid4())
+    inst = (instrument or "stocks").strip().lower()
+    if inst not in ("stocks", "options"):
+        inst = "stocks"
     record = {
         "run_id": run_id,
         "status": "queued",
         "mode": mode,
+        "instrument": inst,
         "tickers": tickers,
         "strategy_ids": strategy_ids,
         "execute_trades": bool(execute_trades),
@@ -338,33 +343,64 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
                 action_counts[action] += 1
             else:
                 action_counts[action] = action_counts.get(action, 0) + 1
+            agent_inst = (
+                decision.get("instrument")
+                or decision.get("asset_class")
+                or decision.get("assetClass")
+            )
+            if isinstance(agent_inst, str):
+                agent_inst = agent_inst.strip().lower()
+                if agent_inst in ("stock", "equity", "equities"):
+                    agent_inst = "stocks"
+                if agent_inst in ("option",):
+                    agent_inst = "options"
+                if agent_inst not in ("stocks", "options"):
+                    agent_inst = None
+            else:
+                agent_inst = None
             decision_rows.append(
                 {
                     "ticker": ticker,
                     "action": action,
                     "quantity": decision.get("quantity", 0),
                     "confidence": decision.get("confidence"),
-                    "reasoning": (decision.get("reasoning") or "")[:400],
+                    "reasoning": (decision.get("reasoning") or "")[:800],
+                    "agent_instrument": agent_inst,
+                    "instrument": rec.get("instrument") or "stocks",
                 }
             )
 
         want_execute = bool(rec.get("execute_trades"))
+        instrument = (rec.get("instrument") or "stocks").strip().lower()
+        if instrument not in ("stocks", "options"):
+            instrument = "stocks"
         trade_results: List[Dict[str, Any]] = []
         executed = False
+        execute_blocked_reason = None
 
         if want_execute:
-            # Refuse live again at execution time (belt + suspenders)
             assert_paper_only()
-            trade_results = _execute_paper_decisions(decisions, mode)
-            executed = True
-            logger.info(
-                "Paper run %s executed %d trade result(s)",
-                run_id,
-                len(trade_results),
-            )
+            if instrument == "options":
+                execute_blocked_reason = (
+                    "Options paper execute not wired yet — research-only. "
+                    "Switch instrument to Stocks to place paper equity orders."
+                )
+                logger.warning(
+                    "Paper run %s: execute_trades blocked for options (research-only)",
+                    run_id,
+                )
+            else:
+                trade_results = _execute_paper_decisions(decisions, mode)
+                executed = True
+                logger.info(
+                    "Paper run %s executed %d trade result(s)",
+                    run_id,
+                    len(trade_results),
+                )
 
         summary = {
             "mode": mode,
+            "instrument": instrument,
             "ticker_count": len(tickers),
             "analyst_count": len(analysts),
             "action_counts": action_counts,
@@ -372,6 +408,7 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
             "decisions": decision_rows,
             "paper": True,
             "executed_trades": executed,
+            "execute_blocked_reason": execute_blocked_reason,
             "trade_results": trade_results,
         }
 

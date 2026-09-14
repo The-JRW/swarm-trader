@@ -461,21 +461,123 @@ def execute_decisions(
     return results
 
 
-def get_open_orders(status: str = "open", mode: str = None) -> list[dict]:
-    """Fetch all open orders from Alpaca.
+
+def close_position(
+    symbol: str,
+    *,
+    percent: float | None = None,
+    qty: float | None = None,
+    mode: str = None,
+    dry_run: bool = False,
+) -> dict:
+    """Close (or partially close) one paper position via market order.
+
+    Prefer ``percent`` (1–100) or exact ``qty``. Default percent=100 (full close).
+    Validates close qty is at least 1 share when the open qty is ≥ 1.
+
+    Returns a sanitized result dict (no secrets).
+    """
+    symbol = (symbol or "").strip().upper()
+    if not symbol:
+        return {"success": False, "symbol": symbol, "reason": "symbol required"}
+
+    positions = get_alpaca_positions(mode)
+    pos = next((p for p in positions if str(p.get("symbol", "")).upper() == symbol), None)
+    if not pos:
+        return {"success": False, "symbol": symbol, "reason": "No open position for symbol"}
+
+    raw_qty = float(pos.get("qty") or 0)
+    if raw_qty == 0:
+        return {"success": False, "symbol": symbol, "reason": "Position qty is 0"}
+
+    side_pos = "long" if raw_qty > 0 else "short"
+    abs_open = abs(raw_qty)
+
+    if qty is not None:
+        close_qty = abs(float(qty))
+    else:
+        pct = 100.0 if percent is None else float(percent)
+        if pct <= 0 or pct > 100:
+            return {"success": False, "symbol": symbol, "reason": "percent must be in (0, 100]"}
+        close_qty = abs_open * (pct / 100.0)
+
+    # Prefer whole shares when open qty is integral ≥ 1
+    if abs_open >= 1 and abs(abs_open - round(abs_open)) < 1e-9:
+        close_qty = int(max(1, min(round(close_qty), int(round(abs_open)))))
+        if close_qty < 1:
+            return {"success": False, "symbol": symbol, "reason": "Close qty must be ≥ 1 share"}
+    else:
+        close_qty = round(min(close_qty, abs_open), 6)
+        if close_qty <= 0:
+            return {"success": False, "symbol": symbol, "reason": "Close qty must be > 0"}
+
+    order_side = "sell" if raw_qty > 0 else "buy"
+
+    if dry_run:
+        return {
+            "success": True,
+            "dry_run": True,
+            "symbol": symbol,
+            "side": side_pos,
+            "order_side": order_side,
+            "qty": close_qty,
+            "open_qty": abs_open,
+            "status": "dry_run",
+        }
+
+    headers = _get_headers(mode)
+    order_data = {
+        "symbol": symbol,
+        "qty": str(close_qty),
+        "side": order_side,
+        "type": "market",
+        "time_in_force": "day",
+    }
+    resp = requests.post(
+        f"{_get_base_url(mode)}/orders",
+        headers=headers,
+        json=order_data,
+        timeout=10,
+    )
+    if resp.status_code in (200, 201):
+        order = resp.json()
+        return {
+            "success": True,
+            "symbol": symbol,
+            "side": side_pos,
+            "order_side": order_side,
+            "qty": close_qty,
+            "open_qty": abs_open,
+            "order_id": order.get("id"),
+            "status": order.get("status"),
+        }
+    return {
+        "success": False,
+        "symbol": symbol,
+        "side": side_pos,
+        "qty": close_qty,
+        "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}",
+    }
+
+
+
+def get_open_orders(status: str = "open", mode: str = None, limit: int = 100) -> list[dict]:
+    """Fetch orders from Alpaca.
 
     Args:
         status: Order status filter — "open", "closed", or "all"
         mode: Trading mode for account routing.
+        limit: Max orders to return (1–500; Alpaca cap).
 
     Returns:
         List of order dicts from Alpaca
     """
     headers = _get_headers(mode)
+    lim = max(1, min(int(limit or 100), 500))
     resp = requests.get(
         f"{_get_base_url(mode)}/orders",
         headers=headers,
-        params={"status": status, "limit": 100},
+        params={"status": status, "limit": lim, "direction": "desc"},
         timeout=10,
     )
     resp.raise_for_status()
