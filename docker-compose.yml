@@ -6,7 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    image: swarm-trader-backend:strategies-ux-5
+    image: swarm-trader-backend:strategies-ux-6
     container_name: swarm-trader-backend
     restart: unless-stopped
     environment:
@@ -19,7 +19,7 @@ services:
       ALPACA_DATA_FEED: ${ALPACA_DATA_FEED:-sip}
       ALPACA_DATA_URL: ${ALPACA_DATA_URL:-https://data.alpaca.markets}
       GIT_SHA: ${GIT_SHA:-}
-      IMAGE_TAG: strategies-ux-5
+      IMAGE_TAG: strategies-ux-6
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       TIINGO_API_KEY: ${TIINGO_API_KEY:-}
       ALPACA_API_KEY: ${ALPACA_API_KEY:-}
@@ -41,7 +41,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-    image: swarm-trader-frontend:strategies-ux-5
+    image: swarm-trader-frontend:strategies-ux-6
     container_name: swarm-trader-frontend
     restart: unless-stopped
     depends_on:

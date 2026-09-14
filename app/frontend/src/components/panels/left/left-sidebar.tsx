@@ -61,7 +61,7 @@ export function LeftSidebar({
     <div 
       ref={elementRef}
       className={cn(
-        "h-full bg-panel flex flex-col relative pt-5 border",
+        "h-full bg-panel flex flex-col relative pt-12 border",
         isCollapsed ? "shadow-lg" : "",
       )}
       style={{ 

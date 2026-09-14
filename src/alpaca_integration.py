@@ -794,3 +794,31 @@ def format_positions_summary(positions_raw: list[dict], account: dict) -> str:
             f"  {symbol}: {qty:.0f} shares  ${market_value:,.2f}  ({pl_sign}{unrealized_pl:,.2f} P&L)"
         )
     return "\n".join(lines)
+
+
+def get_alpaca_portfolio_history(
+    mode: str = None,
+    period: str = "1A",
+    timeframe: str = "1D",
+    extended_hours: bool = True,
+) -> dict:
+    """Fetch Alpaca account portfolio history (equity time series).
+
+    Paper/live URL is determined by account credentials for ``mode``.
+    Returns the raw Alpaca JSON (timestamp, equity, profit_loss, ...).
+    Never logs secrets.
+    """
+    headers = _get_headers(mode)
+    params = {
+        "period": period,
+        "timeframe": timeframe,
+        "extended_hours": str(extended_hours).lower(),
+    }
+    resp = requests.get(
+        f"{_get_base_url(mode)}/account/portfolio/history",
+        headers=headers,
+        params=params,
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return resp.json()

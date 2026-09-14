@@ -14,6 +14,8 @@ from app.backend.models.schemas import (
     PortfolioGlanceResponse,
     PortfolioOrderItem,
     PortfolioOrdersResponse,
+    PeriodPerformanceMetric,
+    PortfolioPerformanceResponse,
     PortfolioPositionItem,
     PortfolioPositionsResponse,
 )
@@ -420,3 +422,166 @@ async def portfolio_close_batch(body: PortfolioCloseBatchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Close-batch failed ({type(e).__name__})")
 
+
+@router.get(
+    "/portfolio/performance",
+    response_model=PortfolioPerformanceResponse,
+)
+async def portfolio_performance():
+    """Paper portfolio performance (day / week / MTD / quarter / YTD).
+
+    Sources:
+    - Current equity/cash from Alpaca account
+    - Day P/L from account equity vs last_equity when present
+    - Longer periods from Alpaca /account/portfolio/history when available
+
+    Never invents numbers — unavailable periods return available:false.
+    Paper-only; sanitized (no secrets).
+    """
+    if alpaca_trading_mode() == "live":
+        return PortfolioPerformanceResponse(
+            available=False,
+            paper=False,
+            message="Performance dashboard is paper-only (ALPACA_TRADING_MODE=live refused)",
+        )
+    ok, glance_mode, msg = _paper_mode_or_refuse()
+    if not ok:
+        return PortfolioPerformanceResponse(
+            available=False,
+            paper=True,
+            message=msg or "Unavailable",
+        )
+    try:
+        from datetime import datetime, timedelta, timezone
+        from src.alpaca_integration import get_alpaca_account, get_alpaca_portfolio_history
+
+        _load_account_positions(glance_mode)
+        try:
+            account = get_alpaca_account(glance_mode)
+        except ValueError:
+            account = get_alpaca_account("swing")
+
+        equity = float(account.get("equity") or account.get("portfolio_value") or 0)
+        cash = float(account.get("cash") or 0)
+
+        def _metric(start: float | None, end: float | None) -> PeriodPerformanceMetric:
+            if start is None or end is None:
+                return PeriodPerformanceMetric(available=False)
+            try:
+                start_f = float(start)
+                end_f = float(end)
+            except (TypeError, ValueError):
+                return PeriodPerformanceMetric(available=False)
+            if start_f <= 0:
+                return PeriodPerformanceMetric(available=False)
+            pnl = end_f - start_f
+            pnl_pct = (pnl / start_f) * 100.0
+            return PeriodPerformanceMetric(
+                available=True,
+                pnl=round(pnl, 2),
+                pnl_pct=round(pnl_pct, 4),
+                start_equity=round(start_f, 2),
+                end_equity=round(end_f, 2),
+            )
+
+        # Day: prefer Alpaca last_equity (official day start)
+        day = PeriodPerformanceMetric(available=False)
+        last_equity_raw = account.get("last_equity")
+        if last_equity_raw is not None:
+            try:
+                last_eq = float(last_equity_raw)
+                if last_eq > 0 and equity > 0:
+                    day = _metric(last_eq, equity)
+            except (TypeError, ValueError):
+                day = PeriodPerformanceMetric(available=False)
+
+        week = PeriodPerformanceMetric(available=False)
+        mtd = PeriodPerformanceMetric(available=False)
+        quarter = PeriodPerformanceMetric(available=False)
+        ytd = PeriodPerformanceMetric(available=False)
+
+        history = None
+        try:
+            history = get_alpaca_portfolio_history(
+                mode=glance_mode, period="1A", timeframe="1D"
+            )
+        except Exception:
+            try:
+                history = get_alpaca_portfolio_history(
+                    mode="swing", period="1A", timeframe="1D"
+                )
+            except Exception:
+                history = None
+
+        if history and isinstance(history, dict):
+            timestamps = history.get("timestamp") or []
+            equities = history.get("equity") or []
+            pairs: list[tuple[datetime, float]] = []
+            for ts, eq in zip(timestamps, equities):
+                if eq is None:
+                    continue
+                try:
+                    eq_f = float(eq)
+                except (TypeError, ValueError):
+                    continue
+                if eq_f <= 0:
+                    continue
+                try:
+                    # Alpaca returns unix seconds
+                    dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+                except (TypeError, ValueError, OSError):
+                    continue
+                pairs.append((dt, eq_f))
+
+            if pairs:
+                pairs.sort(key=lambda p: p[0])
+                now = datetime.now(timezone.utc)
+                end_eq = equity if equity > 0 else pairs[-1][1]
+
+                def equity_at_or_before(target: datetime) -> float | None:
+                    """Last equity observation on or before target; else first after."""
+                    before = [eq for dt, eq in pairs if dt <= target]
+                    if before:
+                        return before[-1]
+                    after = [eq for dt, eq in pairs if dt > target]
+                    return after[0] if after else None
+
+                # Week: ~7 calendar days ago
+                week_target = now - timedelta(days=7)
+                week_start_eq = equity_at_or_before(week_target)
+                week = _metric(week_start_eq, end_eq)
+
+                # MTD: first day of current month
+                mtd_target = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                mtd = _metric(equity_at_or_before(mtd_target), end_eq)
+
+                # Quarter: start of calendar quarter
+                q_month = ((now.month - 1) // 3) * 3 + 1
+                q_target = now.replace(month=q_month, day=1, hour=0, minute=0, second=0, microsecond=0)
+                quarter = _metric(equity_at_or_before(q_target), end_eq)
+
+                # YTD: Jan 1
+                ytd_target = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+                ytd = _metric(equity_at_or_before(ytd_target), end_eq)
+
+                # If day still missing, try history last two points
+                if not day.available and len(pairs) >= 2:
+                    day = _metric(pairs[-2][1], end_eq)
+
+        return PortfolioPerformanceResponse(
+            available=True,
+            paper=True,
+            equity=round(equity, 2) if equity else equity,
+            cash=round(cash, 2) if cash else cash,
+            day=day,
+            week=week,
+            mtd=mtd,
+            quarter=quarter,
+            ytd=ytd,
+        )
+    except Exception as e:
+        return PortfolioPerformanceResponse(
+            available=False,
+            paper=True,
+            message=f"Could not load performance ({type(e).__name__})",
+        )
