@@ -55,5 +55,10 @@ async def build_info():
             "swarm-scan-launch",
             "swarm-scan-cron",
             "swarm-scan-audit",
+            "wave-d-strategies-ia",
+            "run-book-tabs",
+            "risk-policy-glance",
+            "sector-aware-apply",
+            "conviction-recipe-hints",
         ],
     }

@@ -22,6 +22,9 @@ from app.backend.services.paper_run_service import CORE_STRATEGY_IDS
 
 logger = logging.getLogger(__name__)
 
+OTHER_SECTOR = "other"
+DEFAULT_SECTOR_PCT = 0.30
+
 _PRESET_ANALYST_IDS = {
     "core": list(CORE_STRATEGY_IDS),
     "value": [
@@ -78,15 +81,19 @@ def _normalize_source_tags(raw_source: str, *, is_core: bool = False) -> List[st
     return ["core"] if is_core else ["mover"]
 
 
+def _normalize_universe_mode(mode: Optional[str]) -> str:
+    m = (mode or "swing").strip().lower()
+    if m == "auto" or m not in ("swing", "day"):
+        return "swing"
+    return m
+
+
 def _mode_universe_tickers(mode: str) -> Set[str]:
     """All tickers from get_mode_config(mode)['universe'] buckets."""
     try:
         from src.config import get_mode_config
 
-        m = (mode or "swing").strip().lower()
-        if m == "auto" or m not in ("swing", "day"):
-            m = "swing"
-        universe = get_mode_config(m).get("universe") or {}
+        universe = get_mode_config(_normalize_universe_mode(mode)).get("universe") or {}
         out: Set[str] = set()
         for bucket in universe.values():
             if not isinstance(bucket, dict):
@@ -98,6 +105,55 @@ def _mode_universe_tickers(mode: str) -> Set[str]:
     except Exception as e:
         logger.warning("Could not load mode universe (%s)", type(e).__name__)
         return set()
+
+
+def _sector_policy(mode: Optional[str]) -> Dict[str, Any]:
+    """D3 — ticker→sector map plus sector caps/labels for the mode universe.
+
+    Sector percentage caps come from ``src.config`` (the same numbers
+    ``risk_manager`` enforces). Nothing here widens a cap; unknown tickers land
+    in the ``other`` bucket which uses the mode-level ``max_sector_pct``.
+    """
+    resolved = _normalize_universe_mode(mode)
+    ticker_sector: Dict[str, str] = {}
+    sector_pct: Dict[str, float] = {}
+    sector_label: Dict[str, str] = {}
+    default_pct = DEFAULT_SECTOR_PCT
+    try:
+        from src.config import get_mode_config
+
+        config = get_mode_config(resolved)
+        risk = config.get("risk") or {}
+        default_pct = float(risk.get("max_sector_pct") or DEFAULT_SECTOR_PCT)
+        for key, bucket in (config.get("universe") or {}).items():
+            if not isinstance(bucket, dict):
+                continue
+            sector_pct[key] = float(bucket.get("max_sector_pct") or default_pct)
+            sector_label[key] = str(bucket.get("label") or key.replace("_", " ").title())
+            for t in bucket.get("tickers") or []:
+                if t:
+                    ticker_sector[str(t).strip().upper()] = key
+    except Exception as e:
+        logger.warning("Could not load sector policy (%s)", type(e).__name__)
+
+    sector_pct[OTHER_SECTOR] = default_pct
+    sector_label[OTHER_SECTOR] = "Unclassified / off-universe"
+    return {
+        "mode": resolved,
+        "ticker_sector": ticker_sector,
+        "sector_pct": sector_pct,
+        "sector_label": sector_label,
+        "default_pct": default_pct,
+    }
+
+
+def _sector_slot_cap(sector_pct: float, slots: int) -> int:
+    """Translate a sector % cap into a max ticker count for ``slots`` picks."""
+    try:
+        cap = int(float(sector_pct) * int(slots))
+    except (TypeError, ValueError):
+        cap = slots
+    return max(1, min(cap, slots))
 
 
 def _sanitize_candidate(c: Dict[str, Any]) -> Dict[str, Any]:
@@ -233,65 +289,243 @@ def run_swarm_scan(
     return result
 
 
+def _candidate_pool(
+    *,
+    tickers: Optional[List[str]] = None,
+    candidates: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Ordered, de-duped candidate pool from explicit input or the last scan."""
+    pool: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+
+    def _add(sym: str, cand: Optional[Dict[str, Any]] = None) -> None:
+        if not sym or not sym.replace(".", "").isalnum() or sym in seen:
+            return
+        seen.add(sym)
+        pool.append(_sanitize_candidate(cand or {"symbol": sym, "sources": ["mover"]}))
+
+    if tickers:
+        for t in tickers:
+            _add(str(t).strip().upper())
+        return pool
+
+    if candidates:
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            _add(str(c.get("symbol") or c.get("ticker") or "").strip().upper(), c)
+        return pool
+
+    last = read_last_scan() or {}
+    for c in last.get("candidates") or []:
+        if not isinstance(c, dict):
+            continue
+        _add(str(c.get("symbol") or "").strip().upper(), c)
+    if not pool:
+        for t in last.get("tickers") or []:
+            _add(str(t).strip().upper())
+    return pool
+
+
+def select_sector_aware(
+    pool: List[Dict[str, Any]],
+    *,
+    slots: int,
+    policy: Dict[str, Any],
+    current_tickers: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """D3 — diversify first (underweight sectors), then fill, reporting skips.
+
+    Sector caps only ever *trim* the pick list; they never widen risk. Skipped
+    candidates always carry a reason so the UI can explain a short list.
+    """
+    ticker_sector: Dict[str, str] = policy.get("ticker_sector") or {}
+    sector_pct: Dict[str, float] = policy.get("sector_pct") or {}
+    sector_label: Dict[str, str] = policy.get("sector_label") or {}
+    default_pct = float(policy.get("default_pct") or DEFAULT_SECTOR_PCT)
+
+    def sector_of(symbol: str) -> str:
+        return ticker_sector.get(symbol, OTHER_SECTOR)
+
+    def label_of(sector: str) -> str:
+        return sector_label.get(sector, sector.replace("_", " ").title())
+
+    queues: Dict[str, List[Dict[str, Any]]] = {}
+    first_rank: Dict[str, int] = {}
+    for rank, cand in enumerate(pool):
+        sector = sector_of(cand["symbol"])
+        queues.setdefault(sector, []).append(cand)
+        first_rank.setdefault(sector, rank)
+
+    # ``other`` is unclassified, not a sector — risk_manager's sector rule skips
+    # it too, so it stays uncapped here (round-robin still spreads the picks).
+    caps = {
+        sector: slots
+        if sector == OTHER_SECTOR
+        else _sector_slot_cap(sector_pct.get(sector, default_pct), slots)
+        for sector in queues
+    }
+
+    # Sectors already represented in the live recipe are "overweight" for the
+    # next apply — underweight sectors get first pick.
+    current_counts: Dict[str, int] = {}
+    for t in current_tickers or []:
+        sym = str(t).strip().upper()
+        if sym:
+            sector = sector_of(sym)
+            current_counts[sector] = current_counts.get(sector, 0) + 1
+
+    taken: Dict[str, int] = {sector: 0 for sector in queues}
+    chosen: List[Dict[str, Any]] = []
+
+    while len(chosen) < slots:
+        order = sorted(
+            (s for s in queues if queues[s] and taken[s] < caps[s]),
+            key=lambda s: (taken[s], current_counts.get(s, 0), first_rank[s]),
+        )
+        if not order:
+            break
+        before = len(chosen)
+        for sector in order:
+            if len(chosen) >= slots:
+                break
+            if taken[sector] >= caps[sector] or not queues[sector]:
+                continue
+            chosen.append(queues[sector].pop(0))
+            taken[sector] += 1
+        if len(chosen) == before:
+            break
+
+    skipped: List[Dict[str, Any]] = []
+    for sector, remaining in queues.items():
+        for cand in remaining:
+            # A sector cap is only the binding constraint when it is tighter
+            # than the overall slot budget; otherwise the 15-slot cap trimmed it.
+            hit_sector_cap = taken[sector] >= caps[sector] and caps[sector] < slots
+            skipped.append(
+                {
+                    "symbol": cand["symbol"],
+                    "sector": sector,
+                    "sector_label": label_of(sector),
+                    "kind": "sector_cap" if hit_sector_cap else "slot_cap",
+                    "reason": (
+                        f"{label_of(sector)} sector cap — kept {taken[sector]} of {slots} "
+                        f"(≤{round(sector_pct.get(sector, default_pct) * 100)}% sector cap)"
+                        if hit_sector_cap
+                        else f"apply cap reached — {slots} of {APPLY_RECIPE_MAX} tickers filled"
+                    ),
+                }
+            )
+
+    sectors = [
+        {
+            "sector": sector,
+            "label": label_of(sector),
+            "picked": taken[sector],
+            "slot_cap": caps[sector],
+            "max_sector_pct": None
+            if sector == OTHER_SECTOR
+            else round(sector_pct.get(sector, default_pct) * 100, 2),
+            "candidates_seen": taken[sector] + len(queues[sector]),
+            "in_current_recipe": current_counts.get(sector, 0),
+        }
+        for sector in sorted(queues, key=lambda s: (-taken[s], first_rank[s]))
+    ]
+
+    return {
+        "chosen": chosen,
+        "skipped": skipped,
+        "sectors": sectors,
+        "sector_caps_trimmed": any(s["kind"] == "sector_cap" for s in skipped),
+    }
+
+
 def apply_scan_to_recipe(
     *,
     top_n: int = APPLY_RECIPE_MAX,
     tickers: Optional[List[str]] = None,
     candidates: Optional[List[Dict[str, Any]]] = None,
+    sector_aware: bool = True,
+    mode: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """C2 — Apply top N (≤15) scan candidates to cron_recipe tickers."""
+    """C2 + D3 — apply top N (≤15) candidates to cron_recipe, sector-aware.
+
+    Sector-aware ordering prefers underweight sectors, then fills the remaining
+    slots. The recipe is never left empty: if sector selection yields nothing we
+    fall back to plain scan order and say so in ``notes``.
+    """
     n = max(1, min(int(top_n or APPLY_RECIPE_MAX), APPLY_RECIPE_MAX))
+    pool = _candidate_pool(tickers=tickers, candidates=candidates)
+    if not pool:
+        raise ValueError("No candidates to apply — run a scan first")
 
-    chosen: List[str] = []
+    current = read_cron_recipe()
+    policy = _sector_policy(mode or current.get("mode"))
+    notes: List[str] = []
+    skipped: List[Dict[str, Any]] = []
+    sectors: List[Dict[str, Any]] = []
+    trimmed = False
+
     applied_candidates: List[Dict[str, Any]] = []
-
-    def _push(sym: str, cand: Optional[Dict[str, Any]] = None) -> None:
-        nonlocal chosen, applied_candidates
-        if len(chosen) >= n:
-            return
-        if not sym or not sym.replace(".", "").isalnum():
-            return
-        if sym in chosen:
-            return
-        chosen.append(sym)
-        applied_candidates.append(
-            _sanitize_candidate(cand or {"symbol": sym, "sources": ["mover"]})
+    if sector_aware:
+        selection = select_sector_aware(
+            pool,
+            slots=n,
+            policy=policy,
+            current_tickers=current.get("tickers") or [],
         )
+        applied_candidates = selection["chosen"]
+        skipped = selection["skipped"]
+        sectors = selection["sectors"]
+        trimmed = bool(selection["sector_caps_trimmed"])
+        if trimmed:
+            notes.append(
+                "Sector caps trimmed the candidate list — see skip reasons "
+                "(diversification first, then fill)."
+            )
 
-    if tickers:
-        for t in tickers:
-            _push(str(t).strip().upper())
-    elif candidates:
-        for c in candidates:
-            if not isinstance(c, dict):
-                continue
-            sym = str(c.get("symbol") or c.get("ticker") or "").strip().upper()
-            _push(sym, c)
-    else:
-        last = read_last_scan() or {}
-        for c in last.get("candidates") or []:
-            if not isinstance(c, dict):
-                continue
-            sym = str(c.get("symbol") or "").strip().upper()
-            _push(sym, c)
-        if not chosen:
-            for t in last.get("tickers") or []:
-                _push(str(t).strip().upper())
+    if not applied_candidates:
+        # Never silently produce an empty CORE / recipe.
+        applied_candidates = pool[:n]
+        skipped = [
+            {
+                "symbol": c["symbol"],
+                "sector": policy["ticker_sector"].get(c["symbol"], OTHER_SECTOR),
+                "sector_label": "",
+                "kind": "slot_cap",
+                "reason": f"apply cap reached — {n} of {APPLY_RECIPE_MAX} tickers filled",
+            }
+            for c in pool[n:]
+        ]
+        if sector_aware:
+            notes.append(
+                "Sector-aware selection produced no picks — fell back to scan order "
+                "so the recipe is never left empty."
+            )
 
+    chosen = [c["symbol"] for c in applied_candidates][:APPLY_RECIPE_MAX]
+    applied_candidates = applied_candidates[: len(chosen)]
     if not chosen:
         raise ValueError("No candidates to apply — run a scan first")
 
-    chosen = chosen[:APPLY_RECIPE_MAX]
-    applied_candidates = applied_candidates[: len(chosen)]
-
-    current = read_cron_recipe()
     saved = write_cron_recipe({**current, "tickers": chosen})
+    if not saved.get("tickers"):
+        raise ValueError("Recipe write produced an empty ticker list — refusing empty CORE")
+
     return {
         "recipe": saved,
         "applied_tickers": chosen,
         "applied_count": len(chosen),
         "cap": APPLY_RECIPE_MAX,
         "candidates": applied_candidates,
+        "sector_aware": bool(sector_aware),
+        "sector_mode": policy["mode"],
+        "sectors": sectors,
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+        "sector_caps_trimmed": trimmed,
+        "candidate_pool_count": len(pool),
+        "notes": notes,
         "paper_only": True,
     }
 
