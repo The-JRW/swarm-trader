@@ -633,6 +633,13 @@ export interface HitLastPulse {
   cost_gate_rejects?: number;
   turnover_added?: number;
   would_fire_count?: number;
+  /** G2 Ops-visible — true: fast analyst preset only ran. false: the slow
+   * pair (apex + news_sentiment_analyst) ran too. null: older/unknown
+   * record from before this field existed — never guessed. */
+  fast?: boolean | null;
+  /** G2 Ops-visible — the actual analyst set this pulse ran, e.g.
+   * ["technical_analyst","market_regime","autoresearch","sentiment_analyst"]. */
+  analyst_ids?: string[] | null;
 }
 
 export interface HitOps {
@@ -652,6 +659,13 @@ export interface HitOps {
   paper_only?: boolean;
   hit_execute_env_allows?: boolean;
   not_true_hft?: boolean;
+  /** G2 Ops-visible — static preset labels, always present (even with no
+   * pulse yet today), so the panel can render "Fast HIT path" copy without
+   * digging into the API. Source of truth stays the backend `hit_service`. */
+  fast_default?: boolean;
+  fast_path_analyst_ids?: string[];
+  slow_path_analyst_ids?: string[];
+  fast_path_note?: string;
 }
 
 /** F6 — HIT dry-run streak (mirrors A2/E1); record/ack only — never flips SWARM_HIT_EXECUTE. */

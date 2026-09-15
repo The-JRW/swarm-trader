@@ -4,19 +4,41 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { fmtMoney } from '@/components/strategies/format';
 import { cn } from '@/lib/utils';
 import { HitOps, strategiesApi } from '@/services/strategies-api';
-import { Loader2, RefreshCw, Timer } from 'lucide-react';
+import { Loader2, PlayCircle, RefreshCw, Timer, Turtle, Zap } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+
+/** G2 Ops-visible amendment — fallback fast-preset labels, used only until
+ * the first `getHitOps()` response arrives (which carries the backend's own
+ * `fast_path_analyst_ids`/`slow_path_analyst_ids` — the real source of
+ * truth). Kept identical to `hit_service.HIT_PRESET_ANALYST_IDS` /
+ * `HIT_SLOW_LLM_ANALYST_IDS` so there is never a visible flash of "no
+ * analysts" while ops is still loading. */
+const FALLBACK_FAST_ANALYSTS = ['technical_analyst', 'market_regime', 'autoresearch', 'sentiment_analyst'];
+const FALLBACK_SLOW_ANALYSTS = ['apex', 'news_sentiment_analyst'];
 
 /**
  * F5 — Ops HIT strip: trades today, gross turnover, cost-gate rejects, last
  * pulse. HIT = High-frequency **Intraday Turnover** (paper; minutes-hours
  * holds) — this is explicitly NOT true HFT (no co-location, no LOB
- * imbalance modeling). Read-only; polls a persisted counter file, never
- * opens a live WebSocket connection from the browser.
+ * imbalance modeling). Read-only counters; polls a persisted counter file,
+ * never opens a live WebSocket connection from the browser.
+ *
+ * G2 (Wave G) Ops-visible amendment — Chrome review found the fast HIT
+ * path (default analyst preset, skips the heavy apex/news_sentiment LLM
+ * pair) had no Ops/UI copy anywhere, only a backend `fast` field. This card
+ * now surfaces: (1) a badge + labeled analyst set for whichever path the
+ * last pulse actually ran, and (2) a read-only fast/slow selector + "Run
+ * HIT pulse now" button so James can trigger an analysis-only pulse on
+ * either path from Ops/Book without touching the API directly. This
+ * control never flips `SWARM_HIT_EXECUTE` and never sets `execute_trades`
+ * — it always calls `runHitPulse` analysis-only.
  */
 export function HitOpsPanel({ className }: { className?: string }) {
   const [ops, setOps] = useState<HitOps | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fastSelection, setFastSelection] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -33,9 +55,38 @@ export function HitOpsPanel({ className }: { className?: string }) {
     void load();
   }, [load]);
 
+  const runPulse = useCallback(async () => {
+    setRunning(true);
+    setRunError(null);
+    try {
+      await strategiesApi.runHitPulse({ execute_trades: false, fast: fastSelection });
+      await load();
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : 'HIT pulse failed to start');
+    } finally {
+      setRunning(false);
+    }
+  }, [fastSelection, load]);
+
   const lastPulse = ops?.last_pulse;
   const latencies = ops?.recent_fill_latencies || [];
   const rejects = ops?.recent_cost_gate_rejects || [];
+
+  // G2 Ops-visible — the analyst path actually used by the last pulse when
+  // known; otherwise the server's static default (fast=true), never guessed
+  // from the UI's own toggle selection.
+  const lastPulseFast = lastPulse?.fast ?? ops?.fast_default ?? true;
+  const fastAnalysts = ops?.fast_path_analyst_ids?.length
+    ? ops.fast_path_analyst_ids
+    : FALLBACK_FAST_ANALYSTS;
+  const slowAnalysts = ops?.slow_path_analyst_ids?.length
+    ? ops.slow_path_analyst_ids
+    : FALLBACK_SLOW_ANALYSTS;
+  const lastPulseAnalysts = lastPulse?.analyst_ids?.length
+    ? lastPulse.analyst_ids
+    : lastPulseFast
+      ? fastAnalysts
+      : [...fastAnalysts, ...slowAnalysts];
 
   return (
     <Card className={cn('border-amber-500/20', className)}>
@@ -51,7 +102,11 @@ export function HitOpsPanel({ className }: { className?: string }) {
               holds. Not true HFT (no co-location, no LOB imbalance modeling).
             </CardDescription>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={lastPulseFast ? 'success' : 'warning'} className="gap-1">
+              {lastPulseFast ? <Zap className="h-3 w-3" /> : <Turtle className="h-3 w-3" />}
+              {lastPulseFast ? 'Fast HIT path' : 'Slow path (opt-in)'}
+            </Badge>
             <Badge variant={ops?.hit_execute_env_allows ? 'warning' : 'success'}>
               HIT execute env: {ops?.hit_execute_env_allows ? 'allows' : 'blocked (safe)'}
             </Badge>
@@ -99,6 +154,80 @@ export function HitOpsPanel({ className }: { className?: string }) {
                   cost-gate rejects {lastPulse.cost_gate_rejects ?? 0}
                 </p>
               )}
+            </div>
+
+            {/* G2 Ops-visible amendment — fast vs. slow analyst path, always
+                rendered (even with no pulse yet today), plus a read-only
+                selector + manual "Run HIT pulse now" trigger. Never touches
+                SWARM_HIT_EXECUTE; always calls runHitPulse analysis-only. */}
+            <div className="space-y-2 rounded-lg border border-amber-500/20 bg-ramp-grey-800/20 px-3 py-2">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Fast HIT path — analyst set
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {lastPulse ? 'Last pulse ran: ' : 'Default (no pulse yet today): '}
+                <span className="font-mono text-primary">{lastPulseAnalysts.join(' + ')}</span>
+                {lastPulseFast ? (
+                  <> — fast preset only, skips heavy per-ticker LLM calls.</>
+                ) : (
+                  <>
+                    {' '}— includes the slow-path pair (
+                    <span className="font-mono">{slowAnalysts.join(' + ')}</span>: one full LLM
+                    call per ticker each).
+                  </>
+                )}
+              </p>
+              {ops?.fast_path_note ? (
+                <p className="text-[11px] text-muted-foreground">{ops.fast_path_note}</p>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  Run controls:
+                </span>
+                <div className="inline-flex overflow-hidden rounded-md border">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={fastSelection ? 'default' : 'ghost'}
+                    className="h-7 rounded-none text-xs gap-1"
+                    onClick={() => setFastSelection(true)}
+                  >
+                    <Zap className="h-3 w-3" /> Fast (default)
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={!fastSelection ? 'default' : 'ghost'}
+                    className="h-7 rounded-none text-xs gap-1"
+                    onClick={() => setFastSelection(false)}
+                  >
+                    <Turtle className="h-3 w-3" /> Slow (opt-in)
+                  </Button>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs gap-1"
+                  onClick={() => runPulse()}
+                  disabled={running}
+                >
+                  {running ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <PlayCircle className="h-3 w-3" />
+                  )}
+                  Run HIT pulse now (analysis-only)
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {fastSelection
+                  ? `Will run: ${fastAnalysts.join(' + ')}.`
+                  : `Will run: ${fastAnalysts.join(' + ')} + ${slowAnalysts.join(' + ')} (slow pair).`}{' '}
+                Always analysis-only from this button — never flips SWARM_HIT_EXECUTE.
+              </p>
+              {runError ? <p className="text-[11px] text-red-400">{runError}</p> : null}
             </div>
 
             <div className="space-y-1">
