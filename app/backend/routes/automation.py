@@ -9,10 +9,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.backend.services.automation_store import (
     APPLY_RECIPE_MAX,
+    HIT_APPLY_RECIPE_MAX,
+    apply_recipe_max_for,
     auto_launch_env_allows,
     cron_execute_env_allows,
     read_cron_recipe,
@@ -38,6 +40,7 @@ from app.backend.services.hit_dry_run_streak_service import (
     record_ack as record_hit_streak_ack,
 )
 from app.backend.services.hit_ops_service import hit_execute_env_allows, read_hit_ops
+from app.backend.services.hit_service import HIT_MAX_TICKERS
 from app.backend.services.mode_resolver_service import (
     compute_and_persist_mode_resolution,
     read_last_mode_resolution,
@@ -57,9 +60,15 @@ router = APIRouter()
 
 
 class CronRecipeBody(BaseModel):
-    tickers: Optional[List[str]] = Field(default=None, description="Tickers for cron defaults")
-    preset: Optional[str] = Field(default=None, description="core|value|growth|quant|custom")
-    mode: Optional[str] = Field(default=None, description="swing|day|auto")
+    tickers: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Tickers for cron defaults. Capped at 20 unless mode/preset is "
+            f"hit, which allows up to {HIT_APPLY_RECIPE_MAX} (James t180u)."
+        ),
+    )
+    preset: Optional[str] = Field(default=None, description="core|value|growth|quant|hit|custom")
+    mode: Optional[str] = Field(default=None, description="swing|day|hit|auto")
     execute_trades: Optional[bool] = Field(
         default=None,
         description="Request execute for next cron — still dual-gated by env",
@@ -79,21 +88,41 @@ class CronRecipeBody(BaseModel):
                 raise ValueError(f"Invalid ticker: {t}")
             if sym not in cleaned:
                 cleaned.append(sym)
-        if len(cleaned) > 20:
-            raise ValueError("max 20 tickers")
+        # James t180u — the numeric cap is mode/preset-aware; sanitize/dedupe
+        # here, enforce the real ceiling in the model-level validator below
+        # (mode/preset may not have been parsed yet at field-validator time).
+        if len(cleaned) > HIT_APPLY_RECIPE_MAX:
+            raise ValueError(f"max {HIT_APPLY_RECIPE_MAX} tickers")
         return cleaned
+
+    @model_validator(mode="after")
+    def _cap_tickers_by_mode_or_preset(self) -> "CronRecipeBody":
+        if self.tickers is None:
+            return self
+        cap = apply_recipe_max_for(self.mode, self.preset)
+        if len(self.tickers) > cap:
+            raise ValueError(
+                f"max {cap} tickers for mode={self.mode or 'unset'}/preset={self.preset or 'unset'}"
+                + (
+                    ""
+                    if cap == HIT_APPLY_RECIPE_MAX
+                    else f" (set mode or preset to hit to allow up to {HIT_APPLY_RECIPE_MAX})"
+                )
+            )
+        return self
 
 
 @router.get("/automation/status")
 async def automation_ops_status():
     """Ops/Automation card data — last cron paper-run + monitor + recipe + digest."""
     ops = read_ops_status()
+    recipe = ops.get("recipe") or read_cron_recipe()
     return {
         "paper_only": True,
         "monitor_dry_run_env": monitor_dry_run_env_default(),
         "cron_execute_env_allows": cron_execute_env_allows(),
         "auto_launch_env_allows": auto_launch_env_allows(),
-        "recipe": ops.get("recipe") or read_cron_recipe(),
+        "recipe": recipe,
         "last_paper_run": ops.get("last_paper_run"),
         "last_monitor": ops.get("last_monitor"),
         "last_conviction_digest": ops.get("last_conviction_digest"),
@@ -101,6 +130,14 @@ async def automation_ops_status():
         "last_scan": ops.get("last_scan"),
         "recent_scans": read_scan_history(limit=10),
         "apply_cap": APPLY_RECIPE_MAX,
+        # James t180u — the *effective* cap for the current recipe's own
+        # mode/preset (hundreds when hit; same as apply_cap otherwise), so
+        # the Ops UI can show the real ceiling without hardcoding 15.
+        "apply_cap_effective": apply_recipe_max_for(
+            recipe.get("mode") if isinstance(recipe, dict) else None,
+            recipe.get("preset") if isinstance(recipe, dict) else None,
+        ),
+        "hit_apply_cap": HIT_APPLY_RECIPE_MAX,
         "updated_at": ops.get("updated_at"),
         "paths": ops.get("paths"),
     }
@@ -156,26 +193,52 @@ async def put_automation_recipe(body: CronRecipeBody):
 
 
 class SwarmScanRequest(BaseModel):
-    mode: Optional[str] = Field(default=None, description="swing|day|auto")
+    mode: Optional[str] = Field(default=None, description="swing|day|hit|auto")
     intersect_universe: bool = Field(
         default=True,
         description="Intersect candidates with mode universe (default ON)",
     )
-    max_tickers: int = Field(default=25, ge=1, le=50)
+    max_tickers: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=HIT_APPLY_RECIPE_MAX,
+        description=(
+            "Omit to use the mode default (25; hit mode auto-scales to "
+            f"scan_market.HIT_MAX_TICKERS, up to {HIT_APPLY_RECIPE_MAX} — James t180u). "
+            "Alpaca's screener may still return fewer than requested."
+        ),
+    )
     include_core: bool = Field(default=True)
 
 
 class ApplyScanRequest(BaseModel):
-    top_n: int = Field(default=APPLY_RECIPE_MAX, ge=1, le=APPLY_RECIPE_MAX)
+    top_n: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=HIT_APPLY_RECIPE_MAX,
+        description=(
+            "Omit to use the full mode-aware cap (15 normally; "
+            f"{HIT_APPLY_RECIPE_MAX} for mode/preset hit — James t180u)."
+        ),
+    )
     tickers: Optional[List[str]] = Field(
-        default=None, description="Optional explicit tickers (still capped at 15)"
+        default=None,
+        description=(
+            f"Optional explicit tickers (capped at {HIT_APPLY_RECIPE_MAX}; the "
+            "effective per-mode cap is enforced by apply_scan_to_recipe)"
+        ),
     )
     sector_aware: bool = Field(
         default=True,
         description="D3 — diversify underweight sectors first, then fill (skip reasons reported)",
     )
     mode: Optional[str] = Field(
-        default=None, description="Universe/sector policy mode — defaults to recipe mode"
+        default=None,
+        description=(
+            "Universe/sector policy mode — defaults to recipe mode. Passing "
+            "mode=hit here also stamps the saved recipe's mode to hit, so the "
+            "hundreds-scale ticker list is not re-clamped on the next read."
+        ),
     )
 
     @field_validator("tickers")
@@ -192,7 +255,9 @@ class ApplyScanRequest(BaseModel):
                 raise ValueError(f"Invalid ticker: {t}")
             if sym not in cleaned:
                 cleaned.append(sym)
-            if len(cleaned) >= APPLY_RECIPE_MAX:
+            # James t180u — sanity ceiling only; apply_scan_to_recipe enforces
+            # the real mode-aware cap (15 normally, HIT_APPLY_RECIPE_MAX for hit).
+            if len(cleaned) >= HIT_APPLY_RECIPE_MAX:
                 break
         return cleaned
 
@@ -222,7 +287,7 @@ async def automation_swarm_scan(body: Optional[SwarmScanRequest] = None):
         result = run_swarm_scan(
             mode=mode,
             intersect_universe=bool(body.intersect_universe),
-            max_tickers=int(body.max_tickers),
+            max_tickers=body.max_tickers,
             include_core=bool(body.include_core),
             persist=True,
         )
@@ -241,7 +306,11 @@ async def automation_swarm_scan_get():
 
 @router.post("/automation/swarm-scan/apply")
 async def automation_swarm_scan_apply(body: Optional[ApplyScanRequest] = None):
-    """C2 + D3 — Apply top N (≤15) candidates to cron recipe, sector-aware."""
+    """C2 + D3 — Apply top N candidates to cron recipe, sector-aware.
+
+    Cap is mode/preset-aware (James t180u): 15 normally, up to
+    HIT_APPLY_RECIPE_MAX (hundreds) when mode/preset is hit.
+    """
     body = body or ApplyScanRequest()
     mode = body.mode
     if mode is not None:
@@ -493,12 +562,26 @@ async def automation_hit_ops():
 
 
 class HitPulseRequest(BaseModel):
-    tickers: Optional[List[str]] = Field(default=None, description="Optional tickers; default HIT universe")
+    tickers: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Optional tickers; default HIT universe. James t180u: may be "
+            f"hundreds of names (up to {HIT_MAX_TICKERS})."
+        ),
+    )
     execute_trades: bool = Field(
         default=False,
         description="Prefer false (analysis-only). Only takes effect if SWARM_HIT_EXECUTE is truthy.",
     )
-    top_n: int = Field(default=10, ge=1, le=15)
+    top_n: int = Field(
+        default=10,
+        ge=1,
+        le=HIT_MAX_TICKERS,
+        description=(
+            "James t180u — ceiling raised from 15 to HIT_MAX_TICKERS (default "
+            "300); the unspecified default stays 10, unchanged."
+        ),
+    )
     fast: bool = Field(
         default=True,
         description=(

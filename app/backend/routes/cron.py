@@ -11,11 +11,13 @@ import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.backend.dependencies.cron_auth import require_cron_secret
 from app.backend.models.schemas import ErrorResponse, PaperRunStatusResponse
 from app.backend.services.automation_store import (
+    HIT_APPLY_RECIPE_MAX,
+    apply_recipe_max_for,
     auto_launch_env_allows,
     cron_execute_env_allows,
     read_cron_recipe,
@@ -25,6 +27,7 @@ from app.backend.services.automation_store import (
     write_last_monitor,
     write_last_paper_run,
 )
+from app.backend.services.hit_service import HIT_MAX_TICKERS
 from app.backend.services.paper_run_service import (
     CORE_STRATEGY_IDS,
     alpaca_trading_mode,
@@ -121,9 +124,12 @@ def _default_cron_tickers() -> List[str]:
 class CronPaperRunRequest(BaseModel):
     tickers: Optional[List[str]] = Field(
         default=None,
-        description="Optional tickers; default swing core / liquid set",
+        description=(
+            "Optional tickers; default swing core / liquid set. James t180u: "
+            f"mode=hit allows up to {HIT_APPLY_RECIPE_MAX} tickers."
+        ),
     )
-    mode: Optional[str] = Field(default=None, description="swing | day | auto")
+    mode: Optional[str] = Field(default=None, description="swing | day | hit | auto")
     execute_trades: Optional[bool] = Field(
         default=None,
         description="Omit to use recipe; true/false overrides. Still dual-gated by env.",
@@ -147,9 +153,23 @@ class CronPaperRunRequest(BaseModel):
                 raise ValueError(f"Invalid ticker: {t}")
             if sym not in cleaned:
                 cleaned.append(sym)
-        if len(cleaned) > 20:
-            raise ValueError("max 20 tickers")
+        # James t180u — sanitize/dedupe here; enforce the real mode-aware cap
+        # in the model-level validator below (mode may not be parsed yet).
+        if len(cleaned) > HIT_APPLY_RECIPE_MAX:
+            raise ValueError(f"max {HIT_APPLY_RECIPE_MAX} tickers")
         return cleaned or None
+
+    @model_validator(mode="after")
+    def _cap_tickers_by_mode(self) -> "CronPaperRunRequest":
+        if not self.tickers:
+            return self
+        cap = apply_recipe_max_for(self.mode)
+        if len(self.tickers) > cap:
+            raise ValueError(
+                f"max {cap} tickers for mode={self.mode or 'unset'}"
+                + ("" if cap == HIT_APPLY_RECIPE_MAX else " (set mode=hit to allow hundreds)")
+            )
+        return self
 
 
 class CronPortfolioMonitorRequest(BaseModel):
@@ -447,8 +467,16 @@ class CronSwarmScanRequest(BaseModel):
         default=True,
         description="Intersect with mode universe (default ON)",
     )
-    mode: Optional[str] = Field(default=None, description="swing|day|auto")
-    top_n: int = Field(default=15, ge=1, le=15)
+    mode: Optional[str] = Field(default=None, description="swing|day|hit|auto")
+    top_n: int = Field(
+        default=15,
+        ge=1,
+        le=HIT_APPLY_RECIPE_MAX,
+        description=(
+            "James t180u — ceiling raised to HIT_APPLY_RECIPE_MAX for a hit-mode "
+            "apply; default (15) unchanged for swing/day."
+        ),
+    )
 
 
 @router.post(
@@ -510,7 +538,7 @@ async def cron_swarm_scan(body: Optional[CronSwarmScanRequest] = None):
         else:
             if body.apply_recipe:
                 try:
-                    applied = apply_scan_to_recipe(top_n=int(body.top_n))
+                    applied = apply_scan_to_recipe(top_n=int(body.top_n), mode=mode)
                 except Exception as e:
                     notes.append(f"apply_recipe failed: {type(e).__name__}")
             if body.launch:
@@ -551,13 +579,24 @@ class CronHitPulseRequest(BaseModel):
 
     tickers: Optional[List[str]] = Field(
         default=None,
-        description="Optional tickers; default liquid mega-cap + SPY/QQQ (HIT universe)",
+        description=(
+            "Optional tickers; default widened liquid HIT universe (James "
+            f"t180u: may be hundreds of names, up to {HIT_MAX_TICKERS})"
+        ),
     )
     execute_trades: bool = Field(
         default=False,
         description="Prefer false (analysis-only). Only takes effect if SWARM_HIT_EXECUTE is truthy.",
     )
-    top_n: int = Field(default=10, ge=1, le=15)
+    top_n: int = Field(
+        default=10,
+        ge=1,
+        le=HIT_MAX_TICKERS,
+        description=(
+            "James t180u — ceiling raised from 15 to HIT_MAX_TICKERS (default "
+            "300); the unspecified default stays 10, unchanged."
+        ),
+    )
     fast: bool = Field(
         default=True,
         description=(
@@ -582,8 +621,9 @@ class CronHitPulseRequest(BaseModel):
                 raise ValueError(f"Invalid ticker: {t}")
             if sym not in cleaned:
                 cleaned.append(sym)
-        if len(cleaned) > 15:
-            raise ValueError("max 15 tickers")
+        # James t180u — ceiling raised from 15 to HIT_MAX_TICKERS (hundreds).
+        if len(cleaned) > HIT_MAX_TICKERS:
+            raise ValueError(f"max {HIT_MAX_TICKERS} tickers")
         return cleaned or None
 
 

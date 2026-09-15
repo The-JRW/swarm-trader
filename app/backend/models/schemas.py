@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional, Dict, Any
 from src.llm.models import ModelProvider
 from enum import Enum
 from app.backend.services.graph import extract_base_agent_key
+from app.backend.services.hit_service import HIT_MAX_TICKERS
 
 
 class FlowRunStatus(str, Enum):
@@ -333,9 +334,12 @@ class TradingModeSetRequest(BaseModel):
 
 
 class PaperRunRequest(BaseModel):
-    tickers: List[str] = Field(..., min_length=1, max_length=20)
+    tickers: List[str] = Field(
+        ..., min_length=1, max_length=HIT_MAX_TICKERS
+    )  # James t180u — ceiling raised; model_validator below enforces the
+    # tighter 20-ticker cap for every mode except hit.
     strategy_ids: List[str] = Field(default_factory=list)
-    mode: Optional[str] = Field(default=None, description="swing | day | auto")
+    mode: Optional[str] = Field(default=None, description="swing | day | hit | auto")
     sync: bool = Field(default=False, description="If true, run synchronously (short path)")
     execute_trades: bool = Field(
         default=False,
@@ -372,9 +376,26 @@ class PaperRunRequest(BaseModel):
                 cleaned.append(sym)
         if not cleaned:
             raise ValueError("At least one ticker is required")
-        if len(cleaned) > 20:
-            raise ValueError("Max 20 tickers per paper run")
+        # James t180u — sanitize/dedupe here; the real mode-aware cap is
+        # enforced by the model-level validator below (mode may not have
+        # been parsed yet at field-validator time).
+        if len(cleaned) > HIT_MAX_TICKERS:
+            raise ValueError(f"Max {HIT_MAX_TICKERS} tickers per paper run")
         return cleaned
+
+    @model_validator(mode="after")
+    def _cap_tickers_by_mode(self) -> "PaperRunRequest":
+        """James t180u — HIT must be able to run hundreds of tickers in one
+        manual paper run; every other mode keeps the original 20-ticker cap
+        so a mis-typed huge list for swing/day still fails fast."""
+        is_hit = (self.mode or "").strip().lower() == "hit"
+        cap = HIT_MAX_TICKERS if is_hit else 20
+        if len(self.tickers) > cap:
+            raise ValueError(
+                f"Max {cap} tickers per paper run for mode={self.mode or 'default'}"
+                + ("" if is_hit else " (set mode=hit to allow hundreds)")
+            )
+        return self
 
 
 class PaperRunCreateResponse(BaseModel):
