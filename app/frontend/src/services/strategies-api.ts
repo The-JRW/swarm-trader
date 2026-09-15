@@ -237,10 +237,45 @@ export interface DurableRunSummary {
   paper?: boolean;
 }
 
+export interface ScanCandidate {
+  symbol: string;
+  sources: string[];
+  price?: number;
+  change_pct?: number;
+  trade_count?: number;
+  volume?: number;
+}
+
+export interface SwarmScanResult {
+  paper_only?: boolean;
+  timestamp?: string;
+  mode?: string;
+  intersect_universe?: boolean;
+  intersected?: boolean;
+  candidates?: ScanCandidate[];
+  tickers?: string[];
+  candidate_count?: number;
+  auto_launch_env_allows?: boolean;
+  source?: string;
+}
+
+export interface ScanHistoryEntry {
+  updated_at?: string;
+  timestamp?: string;
+  mode?: string;
+  intersect_universe?: boolean;
+  candidate_count?: number;
+  tickers?: string[];
+  candidates_preview?: Array<{ symbol?: string; sources?: string[] }>;
+  paper_only?: boolean;
+}
+
 export interface AutomationOpsStatus {
   paper_only: boolean;
   monitor_dry_run_env: boolean;
   cron_execute_env_allows?: boolean;
+  auto_launch_env_allows?: boolean;
+  apply_cap?: number;
   updated_at?: string | null;
   recipe?: CronRecipe | null;
   last_conviction_digest?: ConvictionDigest | null;
@@ -270,6 +305,15 @@ export interface AutomationOpsStatus {
     warnings?: string[] | null;
     error?: string | null;
   } | null;
+  last_scan?: {
+    updated_at?: string | null;
+    mode?: string | null;
+    intersect_universe?: boolean | null;
+    candidate_count?: number | null;
+    tickers?: string[] | null;
+    paper_only?: boolean;
+  } | null;
+  recent_scans?: ScanHistoryEntry[] | null;
   paths?: Record<string, string> | null;
 }
 
@@ -430,6 +474,67 @@ export const strategiesApi = {
     const response = await fetch(
       `${getApiBaseUrl()}/runs/history?limit=${encodeURIComponent(String(limit))}`
     );
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  runSwarmScan: async (body?: {
+    mode?: string;
+    intersect_universe?: boolean;
+    max_tickers?: number;
+    include_core?: boolean;
+  }): Promise<SwarmScanResult> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/swarm-scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || { intersect_universe: true }),
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  getSwarmScan: async (): Promise<{
+    paper_only: boolean;
+    last_scan: SwarmScanResult | null;
+    recent_scans: ScanHistoryEntry[];
+    auto_launch_env_allows: boolean;
+    apply_cap: number;
+  }> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/swarm-scan`);
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  applyScanToRecipe: async (body?: {
+    top_n?: number;
+    tickers?: string[];
+  }): Promise<{
+    recipe: CronRecipe;
+    applied_tickers: string[];
+    applied_count: number;
+    cap: number;
+    candidates: ScanCandidate[];
+    paper_only: boolean;
+  }> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/swarm-scan/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || { top_n: 15 }),
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  launchFromScan: async (body?: {
+    execute_trades?: boolean;
+    confirm_execute?: boolean;
+    tickers?: string[];
+  }): Promise<PaperRunCreateResponse & { execute_trades?: boolean; tickers?: string[] }> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/swarm-scan/launch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || { execute_trades: false }),
+    });
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();
   },

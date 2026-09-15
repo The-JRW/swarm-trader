@@ -49,5 +49,11 @@ async def build_info():
             "conviction-digest",
             "performance-snapshots",
             "mode-override-ux",
+            "wave-c-orchestrator",
+            "swarm-scan",
+            "swarm-scan-apply",
+            "swarm-scan-launch",
+            "swarm-scan-cron",
+            "swarm-scan-audit",
         ],
     }

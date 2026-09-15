@@ -21,6 +21,10 @@ LAST_MONITOR_FILE = "last_monitor.json"
 OPS_STATUS_FILE = "ops_status.json"
 CRON_RECIPE_FILE = "cron_recipe.json"
 LAST_DIGEST_FILE = "last_conviction_digest.json"
+LAST_SCAN_FILE = "last_scan.json"
+SCAN_HISTORY_FILE = "scan_history.jsonl"
+APPLY_RECIPE_MAX = 15
+SCAN_HISTORY_MAX = 20
 
 VALID_PRESETS = ("core", "value", "growth", "quant", "custom")
 VALID_MODES = ("swing", "day", "auto")
@@ -58,6 +62,19 @@ def _read_json(path: Path) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.warning("Could not read %s (%s)", path, type(e).__name__)
         return None
+
+
+def _scan_ops_summary(scan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not scan:
+        return None
+    return {
+        "updated_at": scan.get("updated_at") or scan.get("timestamp"),
+        "mode": scan.get("mode"),
+        "intersect_universe": scan.get("intersect_universe"),
+        "candidate_count": scan.get("candidate_count") or len(scan.get("candidates") or []),
+        "tickers": (scan.get("tickers") or [])[:APPLY_RECIPE_MAX],
+        "paper_only": True,
+    }
 
 
 def cron_execute_env_allows() -> bool:
@@ -194,6 +211,7 @@ def _refresh_ops_status() -> None:
         "paper_only": True,
         "monitor_dry_run_env": dry_run_env != "false",
         "cron_execute_env_allows": cron_execute_env_allows(),
+        "auto_launch_env_allows": auto_launch_env_allows(),
         "recipe": {
             "tickers": recipe.get("tickers"),
             "preset": recipe.get("preset"),
@@ -234,12 +252,16 @@ def _refresh_ops_status() -> None:
         }
         if monitor
         else None,
+        "last_scan": _scan_ops_summary(_read_json(_ensure_dir() / LAST_SCAN_FILE)),
+        "recent_scans_count": len(read_scan_history(limit=SCAN_HISTORY_MAX)),
         "paths": {
             "dir": str(AUTOMATION_DIR),
             "last_paper_run": str(AUTOMATION_DIR / LAST_PAPER_RUN_FILE),
             "last_monitor": str(AUTOMATION_DIR / LAST_MONITOR_FILE),
             "cron_recipe": str(AUTOMATION_DIR / CRON_RECIPE_FILE),
             "last_conviction_digest": str(AUTOMATION_DIR / LAST_DIGEST_FILE),
+            "last_scan": str(AUTOMATION_DIR / LAST_SCAN_FILE),
+            "scan_history": str(AUTOMATION_DIR / SCAN_HISTORY_FILE),
         },
     }
     _atomic_write(_ensure_dir() / OPS_STATUS_FILE, payload)
@@ -252,6 +274,7 @@ def read_ops_status() -> Dict[str, Any]:
     if data:
         # Always refresh env-derived flags
         data["cron_execute_env_allows"] = cron_execute_env_allows()
+        data["auto_launch_env_allows"] = auto_launch_env_allows()
         dry_run_env = (os.environ.get("SWARM_MONITOR_DRY_RUN") or "true").strip().lower()
         data["monitor_dry_run_env"] = dry_run_env != "false"
         if "recipe" not in data:
@@ -276,6 +299,121 @@ def read_ops_status() -> Dict[str, Any]:
             "cron_recipe": str(AUTOMATION_DIR / CRON_RECIPE_FILE),
         },
     }
+
+
+
+
+def auto_launch_env_allows() -> bool:
+    """True only when SWARM_AUTO_LAUNCH is explicitly truthy.
+
+    When false/absent, cron swarm-scan is scan-only (ignore apply_recipe/launch).
+    """
+    val = (os.environ.get("SWARM_AUTO_LAUNCH") or "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def _strip_secrets(payload: Dict[str, Any]) -> Dict[str, Any]:
+    banned = {
+        "secret",
+        "headers",
+        "env",
+        "api_key",
+        "api_secret",
+        "ALPACA_API_KEY",
+        "ALPACA_API_SECRET",
+        "SWARM_CRON_SECRET",
+        "SWARM_AUTO_LAUNCH",
+        "Authorization",
+        "authorization",
+    }
+    if not isinstance(payload, dict):
+        return {}
+    return {k: v for k, v in payload.items() if k not in banned}
+
+
+def write_last_scan(summary: Dict[str, Any]) -> Path:
+    """Persist last swarm scan JSON (no secrets) + append to scan history."""
+    path = _ensure_dir() / LAST_SCAN_FILE
+    clean = _strip_secrets(summary or {})
+    # Never embed env or credentials
+    payload = {
+        "updated_at": _now_iso(),
+        "paper_only": True,
+        **clean,
+        "paper_only": True,
+    }
+    # Cap candidate list size in persisted file
+    cands = payload.get("candidates")
+    if isinstance(cands, list) and len(cands) > 50:
+        payload["candidates"] = cands[:50]
+    tickers = payload.get("tickers")
+    if isinstance(tickers, list) and len(tickers) > 50:
+        payload["tickers"] = tickers[:50]
+    _atomic_write(path, payload)
+    _append_scan_history(payload)
+    _refresh_ops_status()
+    return path
+
+
+def read_last_scan() -> Optional[Dict[str, Any]]:
+    return _read_json(_ensure_dir() / LAST_SCAN_FILE)
+
+
+def _append_scan_history(entry: Dict[str, Any]) -> None:
+    """Append one scan summary line; keep last SCAN_HISTORY_MAX (C5)."""
+    hist_path = _ensure_dir() / SCAN_HISTORY_FILE
+    line_obj = {
+        "updated_at": entry.get("updated_at") or _now_iso(),
+        "timestamp": entry.get("timestamp"),
+        "mode": entry.get("mode"),
+        "intersect_universe": entry.get("intersect_universe"),
+        "candidate_count": entry.get("candidate_count")
+        or len(entry.get("candidates") or []),
+        "tickers": (entry.get("tickers") or [])[:APPLY_RECIPE_MAX],
+        "candidates_preview": [
+            {
+                "symbol": c.get("symbol"),
+                "sources": c.get("sources"),
+            }
+            for c in (entry.get("candidates") or [])[:APPLY_RECIPE_MAX]
+            if isinstance(c, dict)
+        ],
+        "paper_only": True,
+    }
+    try:
+        existing: List[str] = []
+        if hist_path.is_file():
+            existing = [
+                ln for ln in hist_path.read_text(encoding="utf-8").splitlines() if ln.strip()
+            ]
+        existing.append(json.dumps(line_obj, default=str))
+        existing = existing[-SCAN_HISTORY_MAX:]
+        tmp = hist_path.with_suffix(hist_path.suffix + ".tmp")
+        tmp.write_text("\n".join(existing) + "\n", encoding="utf-8")
+        tmp.replace(hist_path)
+    except Exception as e:
+        logger.warning("Could not append scan history (%s)", type(e).__name__)
+
+
+def read_scan_history(limit: int = 10) -> List[Dict[str, Any]]:
+    """Return last K scan summaries (newest first)."""
+    hist_path = _ensure_dir() / SCAN_HISTORY_FILE
+    limit = max(1, min(int(limit or 10), SCAN_HISTORY_MAX))
+    if not hist_path.is_file():
+        return []
+    rows: List[Dict[str, Any]] = []
+    try:
+        for ln in hist_path.read_text(encoding="utf-8").splitlines():
+            if not ln.strip():
+                continue
+            try:
+                rows.append(json.loads(ln))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    rows.reverse()
+    return rows[:limit]
 
 
 def read_last_monitor() -> Optional[Dict[str, Any]]:

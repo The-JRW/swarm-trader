@@ -28,7 +28,10 @@ import {
   PortfolioOrder,
   PortfolioPosition,
   PortfolioPositionsResponse,
+  ScanCandidate,
+  ScanHistoryEntry,
   Strategy,
+  SwarmScanResult,
   strategiesApi,
 } from '@/services/strategies-api';
 import {
@@ -260,6 +263,16 @@ export function StrategiesPage() {
   const [recipeSaving, setRecipeSaving] = useState(false);
   const [executeConfirmOpen, setExecuteConfirmOpen] = useState(false);
 
+  // Wave C — swarm scan
+  const [scanResult, setScanResult] = useState<SwarmScanResult | null>(null);
+  const [scanCandidates, setScanCandidates] = useState<ScanCandidate[]>([]);
+  const [recentScans, setRecentScans] = useState<ScanHistoryEntry[]>([]);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [applyLoading, setApplyLoading] = useState(false);
+  const [launchLoading, setLaunchLoading] = useState(false);
+  const [intersectUniverse, setIntersectUniverse] = useState(true);
+  const [applyTopN, setApplyTopN] = useState(15);
+
   // B5 mode override reason
   const [overrideReason, setOverrideReason] = useState('');
   const [useOverride, setUseOverride] = useState(true);
@@ -351,6 +364,7 @@ export function StrategiesPage() {
         setRecipe(s.recipe as CronRecipe);
       }
       setDurableHistory(hist.runs || []);
+      if (s.recent_scans) setRecentScans(s.recent_scans);
     } catch {
       setOpsStatus(null);
     } finally {
@@ -527,6 +541,65 @@ export function StrategiesPage() {
     } finally {
       setRecipeSaving(false);
       setExecuteConfirmOpen(false);
+    }
+  };
+
+  const runSwarmScan = async () => {
+    setScanLoading(true);
+    try {
+      const res = await strategiesApi.runSwarmScan({
+        mode: recipeMode,
+        intersect_universe: intersectUniverse,
+        include_core: true,
+      });
+      setScanResult(res);
+      setScanCandidates(res.candidates || []);
+      toast.success(
+        `Scan complete — ${res.candidate_count ?? (res.candidates || []).length} candidates`
+      );
+      await refreshOps();
+      const hist = await strategiesApi.getSwarmScan().catch(() => null);
+      if (hist?.recent_scans) setRecentScans(hist.recent_scans);
+    } catch (e: any) {
+      toast.error(e?.message || 'Scan failed');
+    } finally {
+      setScanLoading(false);
+    }
+  };
+
+  const applyScanToRecipe = async () => {
+    setApplyLoading(true);
+    try {
+      const n = Math.max(1, Math.min(applyTopN || 15, 15));
+      const tickers =
+        scanCandidates.length > 0
+          ? scanCandidates.slice(0, n).map((c) => c.symbol)
+          : undefined;
+      const res = await strategiesApi.applyScanToRecipe({ top_n: n, tickers });
+      setRecipe(res.recipe);
+      setRecipeTickers((res.applied_tickers || []).join(', '));
+      toast.success(`Applied ${res.applied_count} tickers to recipe (cap ${res.cap})`);
+      await refreshOps();
+    } catch (e: any) {
+      toast.error(e?.message || 'Apply to recipe failed');
+    } finally {
+      setApplyLoading(false);
+    }
+  };
+
+  const launchAnalysisFromScan = async () => {
+    setLaunchLoading(true);
+    try {
+      const res = await strategiesApi.launchFromScan({
+        execute_trades: false,
+        confirm_execute: false,
+      });
+      toast.success(res.message || `Analysis queued: ${res.run_id?.slice(0, 8)}`);
+      await refreshOps();
+    } catch (e: any) {
+      toast.error(e?.message || 'Launch analysis failed');
+    } finally {
+      setLaunchLoading(false);
     }
   };
 
@@ -1319,7 +1392,7 @@ export function StrategiesPage() {
                 <div>
                   <CardTitle className="text-base">Ops / Automation</CardTitle>
                   <CardDescription>
-                    Cron recipe, last paper-run, monitor, and conviction digest. Paper-only; no secrets.
+                    Cron recipe, swarm scan, last paper-run, monitor, and conviction digest. Paper-only; no secrets.
                   </CardDescription>
                 </div>
                 <Button
@@ -1425,6 +1498,119 @@ export function StrategiesPage() {
                   {' '}
                   (dual gate: recipe + SWARM_CRON_EXECUTE_TRADES)
                 </p>
+              </div>
+
+              <div className="rounded-lg border px-3 py-3 space-y-3">
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Swarm scan (Wave C)
+                </div>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <Badge variant={opsStatus?.auto_launch_env_allows ? 'warning' : 'success'}>
+                    auto-launch env:{' '}
+                    {opsStatus?.auto_launch_env_allows ? 'on' : 'off (scan-only cron)'}
+                  </Badge>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                    <Checkbox
+                      checked={intersectUniverse}
+                      onCheckedChange={(v) => setIntersectUniverse(v === true)}
+                    />
+                    Intersect mode universe (default ON)
+                  </label>
+                </div>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <Button
+                    size="sm"
+                    className="h-8 bg-blue-600 hover:bg-blue-500 text-white"
+                    disabled={scanLoading}
+                    onClick={() => runSwarmScan()}
+                  >
+                    {scanLoading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                    Scan market
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8"
+                    disabled={applyLoading || (!scanCandidates.length && !opsStatus?.last_scan)}
+                    onClick={() => applyScanToRecipe()}
+                  >
+                    {applyLoading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                    Apply to recipe
+                  </Button>
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                    top
+                    <Input
+                      type="number"
+                      min={1}
+                      max={15}
+                      value={applyTopN}
+                      onChange={(e) =>
+                        setApplyTopN(Math.max(1, Math.min(15, Number(e.target.value) || 15)))
+                      }
+                      className="h-7 w-14 text-xs"
+                    />
+                    /15
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8"
+                    disabled={launchLoading}
+                    onClick={() => launchAnalysisFromScan()}
+                  >
+                    {launchLoading ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : (
+                      <Play className="h-3 w-3 mr-1" />
+                    )}
+                    Run analysis
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Paper-only. Run analysis uses recipe/CORE analysts (analysis-only default).
+                  Execute still dual-gated. Cron apply/launch only if SWARM_AUTO_LAUNCH.
+                </p>
+                {scanResult?.mode ? (
+                  <p className="text-xs text-muted-foreground">Last run mode: {scanResult.mode}</p>
+                ) : null}
+                {scanCandidates.length > 0 ? (
+                  <ul className="space-y-0.5 max-h-36 overflow-auto font-mono text-xs">
+                    {scanCandidates.slice(0, 20).map((c) => (
+                      <li key={c.symbol}>
+                        {c.symbol}{' '}
+                        <span className="text-muted-foreground">
+                          [{(c.sources || []).join('+') || '—'}]
+                          {typeof c.change_pct === 'number' ? ` ${c.change_pct}%` : ''}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : opsStatus?.last_scan?.tickers?.length ? (
+                  <p className="text-xs text-muted-foreground font-mono">
+                    Last scan: {(opsStatus.last_scan.tickers || []).slice(0, 12).join(', ')}
+                    {opsStatus.last_scan.candidate_count
+                      ? ` (${opsStatus.last_scan.candidate_count})`
+                      : ''}
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No scan yet — click Scan market.</p>
+                )}
+                {recentScans.length > 0 ? (
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      Recent scans (C5)
+                    </div>
+                    <ul className="space-y-0.5 max-h-28 overflow-auto text-xs text-muted-foreground">
+                      {recentScans.slice(0, 8).map((s, i) => (
+                        <li key={`${s.updated_at || s.timestamp || i}`}>
+                          {s.updated_at || s.timestamp || '—'} · {s.mode || '—'} ·{' '}
+                          {s.candidate_count ?? (s.tickers || []).length} tickers
+                          {s.intersect_universe ? ' · intersect' : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
               </div>
 
               <div className="rounded-lg border px-3 py-2 space-y-1">
