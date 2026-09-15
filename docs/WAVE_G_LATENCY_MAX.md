@@ -12,6 +12,14 @@ claims.** Paper-only follow-up to Wave F for **The-JRW/swarm-trader**. Image tag
 `strategies-ux-15`. Feature flags: `hit-fast-path`, `hit-quote-freshness-gate`,
 `hit-quote-ws-optional`, `hit-latency-observatory` (see `GET /build-info`).
 
+> **Reviewer `CHANGES_REQUIRED` follow-up (G2 only, image tag bumped to `strategies-ux-16`,
+> new flag `hit-fast-path-ops-visible`):** G2's `fast` flag was live and correctly wired
+> end-to-end on the backend, but Chrome found **no Ops/UI copy anywhere** for the fast HIT
+> path / "skip heavy LLM" — a backend-only flag isn't reviewable from the UI. See
+> ["G2 Ops-visible amendment"](#g2-ops-visible-amendment-reviewer-changes_required-strategies-ux-16)
+> below for exactly what changed. No execute dual gate, cost gate, trade cap, or HFT claim was
+> touched by this follow-up — it is UI/Ops-copy only, same as everything else in G2.
+
 ## Read this first: what "as close as this stack allows" actually means
 
 **This is latency-max paper trading over a broker REST/WebSocket API. It is not, and cannot
@@ -79,6 +87,44 @@ cannot mean "run technical_analyst's *node* before apex's *node*" (LangGraph doe
 useful ordering knob there for parallel fan-out/fan-in). It has to mean — and does mean here —
 "don't put an LLM-heavy analyst in the run's analyst set unless asked", which is the only
 lever that actually changes how long a HIT run has to wait before the PM can decide.
+
+#### G2 Ops-visible amendment (Reviewer `CHANGES_REQUIRED`, `strategies-ux-16`)
+
+**Problem:** G2's `fast` flag was correctly wired end-to-end on the backend
+(`resolve_hit_analyst_ids` → `run_hit_pulse` → both HTTP entry points), but there was **no
+Ops/UI copy anywhere** for the fast HIT path or "skip heavy LLM" — a Chrome reviewer could not
+see it without reading the API response directly. Backend-only was insufficient.
+
+**Fix (minimal, paper-only — UI/Ops-copy only, no gate/cap/claim changes):**
+
+- `app/backend/services/hit_ops_service.py`: `record_hit_run(..., fast=None,
+  analyst_ids=None)` now copies both onto the persisted `last_pulse` (`None`/omitted when a
+  caller doesn't pass them — never guessed). `read_hit_ops()` always includes
+  `fast_default` (`true`), `fast_path_analyst_ids` (mirrors `HIT_PRESET_ANALYST_IDS`),
+  `slow_path_analyst_ids` (mirrors `HIT_SLOW_LLM_ANALYST_IDS`), and a `fast_path_note` — so
+  the Ops HIT strip can render "Fast HIT path" copy even before any pulse has run today.
+- `app/backend/services/paper_run_service.py`: `execute_paper_run`'s `mode == "hit"` branch
+  derives `fast` from the run's **actual** resolved analyst set (`ran_slow_path = any(a in
+  HIT_SLOW_LLM_ANALYST_IDS for a in analysts)`) — never re-guessed from a request flag that
+  might not match what `_select_analysts` resolved — and passes `fast`/`analyst_ids` through
+  to `record_hit_run`.
+- `app/frontend/src/components/strategies/hit-ops-panel.tsx` (`HitOpsPanel`, the card James
+  uses in Ops/Book): a header badge — ⚡ **"Fast HIT path"** (default) or 🐢 **"Slow path
+  (opt-in)"** — reflecting the last pulse's actual path (falls back to the server default when
+  no pulse has run yet); a labeled "Fast HIT path — analyst set" block spelling out
+  `technical_analyst + market_regime + autoresearch + sentiment_analyst` for the fast path, or
+  additionally `apex + news_sentiment_analyst` when the slow path ran; and a read-only
+  **Fast (default) / Slow (opt-in)** selector plus a **"Run HIT pulse now (analysis-only)"**
+  button so James can trigger either path directly from Ops/Book. That button always calls
+  `POST /api/automation/hit/pulse` with `execute_trades: false` — it can select the analyst
+  path, but it can never flip `SWARM_HIT_EXECUTE` or set `execute_trades: true`.
+- `app/backend/routes/build_info.py`: new feature flag `hit-fast-path-ops-visible`.
+- Image tag bumped `strategies-ux-15` → `strategies-ux-16` (`docker-compose.yml`).
+
+**Explicitly unchanged by this amendment:** the F2/G3 cost gate, the execute dual gate
+(`SWARM_HIT_EXECUTE` ∧ explicit request), every `hit` risk cap (including the t175u
+`max_trades_per_day` override), and every "not true HFT / not colocated" claim in this doc and
+`docs/WAVE_F_HIT.md` — this amendment adds visibility, not new capability.
 
 ### G3 — quote freshness
 
@@ -217,6 +263,11 @@ curl -sS -X POST -H "Content-Type: application/json" -d '{}' \
 curl -sS -X POST -H "Content-Type: application/json" -d '{"fast": false}' \
   https://<host>/api/automation/hit/pulse | jq '.strategy_ids, .fast'
 
+# G2 Ops-visible amendment — fast/slow analyst labels + last pulse's path,
+# always present even before a pulse runs (surfaced in HitOpsPanel)
+curl -sS https://<host>/api/automation/hit/ops | \
+  jq '.fast_default, .fast_path_analyst_ids, .slow_path_analyst_ids, .last_pulse.fast, .last_pulse.analyst_ids'
+
 # G3 — cost-gate response now reports quote_age_ms / max_quote_age_ms on rejects
 curl -sS https://<host>/api/automation/hit/ops | jq '.recent_cost_gate_rejects'
 
@@ -243,9 +294,14 @@ breakdown (`decision_to_submit_ms`/`submit_to_ack_ms`/`ack_to_fill_ms`/`decision
 computed only from present timestamps, `None` otherwise; Wave F's original `latency_ms`
 measure unchanged) and `alpaca_integration`'s `_post_order_with_timing` helper (captures
 `client_submit_at` always, `broker_ack_at` only on success); G5's regression that the
-execute dual gate's truth table is unchanged; and the `strategies-ux-15` build-info flags
+execute dual gate's truth table is unchanged; the `strategies-ux-15` build-info flags
 (`hit-fast-path`, `hit-quote-freshness-gate`, `hit-quote-ws-optional`,
-`hit-latency-observatory`).
+`hit-latency-observatory`); and — G2 Ops-visible amendment — that `read_hit_ops()` always
+includes the fast/slow analyst labels even with no pulse yet today, that `record_hit_run`
+persists `fast`/`analyst_ids` on `last_pulse` (and leaves both `None` when a caller omits
+them — never guessed), that `paper_run_service` derives `fast` from the run's actual resolved
+analyst set (source-level check), that `strategies-ux-16` + `hit-fast-path-ops-visible` are
+present, and that `docker-compose.yml` no longer references the prior tag.
 
 ```bash
 poetry run pytest tests/test_wave_g_latency_max.py -q
