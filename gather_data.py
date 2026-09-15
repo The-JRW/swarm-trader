@@ -411,9 +411,12 @@ def main():
             "min_confidence": 55,
             "max_loss_per_day": 0.03,
         } if args.mode == "day" else {
-            # F1 — HIT: smaller per-trade cap, higher turnover, tighter loss limit
+            # F1 — HIT: smaller per-trade cap, effectively unlimited turnover.
+            # James override (t175u): matches src/config.py MODES["hit"]["risk"]
+            # max_trades_per_day=5000 — no informational cap left here that would
+            # contradict the real risk_manager limit. All other rails unchanged.
             "max_trade_pct": 0.07,
-            "max_trades_per_run": 50,
+            "max_trades_per_run": 5000,
             "min_confidence": 55,
             "max_loss_per_day": 0.03,
         } if args.mode == "hit" else {

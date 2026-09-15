@@ -103,7 +103,8 @@ export function HitOpsPanel({ className }: { className?: string }) {
 
             <div className="space-y-1">
               <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Recent fill latency (when Alpaca returns timestamps — blank otherwise)
+                Latency observatory — decision→submit→ack→fill (blank when a stage's
+                timestamp is unavailable — never fabricated)
               </div>
               {latencies.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
@@ -113,16 +114,20 @@ export function HitOpsPanel({ className }: { className?: string }) {
                 <ul className="space-y-0.5 max-h-28 overflow-auto font-mono text-xs text-muted-foreground">
                   {latencies.slice(0, 8).map((l, i) => (
                     <li key={`${l.order_id || i}`}>
-                      {l.ticker} · {l.latency_ms != null ? `${l.latency_ms}ms` : '—'}
+                      {l.ticker} · submit→fill {l.latency_ms != null ? `${l.latency_ms}ms` : '—'}
+                      {l.decision_to_fill_ms != null ? ` · decision→fill ${l.decision_to_fill_ms}ms` : ''}
                     </li>
                   ))}
                 </ul>
               )}
+              {ops.latency_note ? (
+                <p className="text-[11px] text-muted-foreground">{ops.latency_note}</p>
+              ) : null}
             </div>
 
             <div className="space-y-1">
               <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Recent cost-gate rejects (F2)
+                Recent cost-gate rejects (F2 cost/turnover · G3 stale quote)
               </div>
               {rejects.length === 0 ? (
                 <p className="text-xs text-muted-foreground">No cost-gate rejects recorded yet.</p>
@@ -131,7 +136,12 @@ export function HitOpsPanel({ className }: { className?: string }) {
                   {rejects.slice(0, 8).map((r, i) => (
                     <li key={`${r.ticker}-${i}`}>
                       <span className="font-mono text-primary">{r.ticker}</span>{' '}
-                      {r.round_trip_cost_bps != null ? `${r.round_trip_cost_bps}bps` : ''} — {r.reason}
+                      {r.rule === 'stale_quote' && r.quote_age_ms != null
+                        ? `quote ${Math.round(r.quote_age_ms)}ms stale`
+                        : r.round_trip_cost_bps != null
+                          ? `${r.round_trip_cost_bps}bps`
+                          : ''}{' '}
+                      — {r.reason}
                     </li>
                   ))}
                 </ul>

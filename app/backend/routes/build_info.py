@@ -74,5 +74,11 @@ async def build_info():
             "hit-pulse-cron",
             "hit-ops-strip",
             "hit-dry-run-streak",
+            # Wave G — latency-max paper HIT (still NOT colocated µs HFT).
+            # See docs/WAVE_G_LATENCY_MAX.md.
+            "hit-fast-path",
+            "hit-quote-freshness-gate",
+            "hit-quote-ws-optional",
+            "hit-latency-observatory",
         ],
     }

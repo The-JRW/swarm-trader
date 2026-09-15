@@ -226,8 +226,11 @@ def _sanitize_trade_result(row: Dict[str, Any]) -> Dict[str, Any]:
         "limit_price",
         "trail_percent",
         "side",
-        # F5 — fill-latency timestamps when Alpaca returns them; blank if missing
-        # (never fabricated). See app/backend/services/hit_ops_service.py.
+        # F5/G4 — decision→submit→ack→fill timestamps when available; blank if
+        # missing (never fabricated). See app/backend/services/hit_ops_service.py.
+        "decision_at",
+        "client_submit_at",
+        "broker_ack_at",
         "submitted_at",
         "filled_at",
     )
@@ -240,7 +243,9 @@ def _sanitize_trade_result(row: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _execute_paper_decisions(decisions: dict, mode: str) -> List[Dict[str, Any]]:
+def _execute_paper_decisions(
+    decisions: dict, mode: str, decision_at: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """Place paper orders via alpaca_integration.execute_decisions. Never logs secrets."""
     from src.alpaca_integration import (
         execute_decisions,
@@ -270,6 +275,11 @@ def _execute_paper_decisions(decisions: dict, mode: str) -> List[Dict[str, Any]]
         account=account or {},
         dry_run=False,
         mode=account_mode,
+        # G4 — decision→submit→ack→fill: the batch decision timestamp,
+        # captured by the caller right after analysis/cost-gate finished and
+        # right before this execute call. Never fabricated; omitted entirely
+        # when the caller didn't pass one.
+        decision_at=decision_at,
     )
     return [_sanitize_trade_result(r) for r in (raw or [])]
 
@@ -489,7 +499,13 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
                             for t, d in decisions.items()
                         }
 
-                trade_results = _execute_paper_decisions(decisions_to_execute, mode)
+                # G4 — decision→submit→ack→fill: this batch's decisions are
+                # finalized (post cost-gate) right here — capture the clock
+                # once and attach it to every order this batch places.
+                decision_at = _now_iso()
+                trade_results = _execute_paper_decisions(
+                    decisions_to_execute, mode, decision_at=decision_at
+                )
                 for rej in cost_gate_rejects:
                     trade_results.append(
                         {

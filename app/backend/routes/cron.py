@@ -558,6 +558,15 @@ class CronHitPulseRequest(BaseModel):
         description="Prefer false (analysis-only). Only takes effect if SWARM_HIT_EXECUTE is truthy.",
     )
     top_n: int = Field(default=10, ge=1, le=15)
+    fast: bool = Field(
+        default=True,
+        description=(
+            "G2 — default true: fast analyst preset only (technical_analyst/"
+            "market_regime/autoresearch/sentiment_analyst). false: also adds "
+            "apex + news_sentiment_analyst (slow path — one full LLM call per "
+            "ticker each). See docs/WAVE_G_LATENCY_MAX.md."
+        ),
+    )
 
     @field_validator("tickers")
     @classmethod
@@ -621,6 +630,7 @@ async def cron_hit_pulse(body: Optional[CronHitPulseRequest] = None):
             tickers=body.tickers,
             execute_requested=bool(body.execute_trades),
             top_n=body.top_n,
+            fast=bool(body.fast),
         )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=f"FAIL_CLOSED: {e}") from e

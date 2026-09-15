@@ -7,18 +7,25 @@ momentum/mean-reversion strategies only look profitable before realistic
 costs; bid-ask bounce looks like mean reversion until spread + turnover costs
 are subtracted.
 
-Two checks, either of which blocks a proposed **entry** (buy/short only —
+Three checks, any of which blocks a proposed **entry** (buy/short only —
 exits/holds always pass through):
 
   1. Estimated round-trip cost (2x half-spread) >= a configured bps budget.
   2. This trade would push same-day gross turnover over a configured budget
      (fraction of equity).
+  3. (Wave G / G3) The live quote backing check #1 is stale — its own
+     timestamp is older than a configured max age. A stale quote cannot
+     honestly back a cost estimate, so the entry is blocked rather than
+     traded on data that may no longer reflect the market. This is the
+     closest this paper/broker-API stack gets to "quote freshness" — it is
+     staleness *rejection*, not a claim of tick-level, co-located market data.
 
 Half-spread is estimated from a live Alpaca quote when available; otherwise a
 documented ticker-class default is used and clearly labeled as *assumed*, not
 measured — this module never presents an assumption as real market data.
 
-Blocked entries are tagged ``rule="cost_gate"`` so they surface distinctly in
+Blocked entries are tagged ``rule="cost_gate"`` (bps/turnover) or
+``rule="stale_quote"`` (G3 freshness) so they surface distinctly in
 trade_results / the conviction digest / the Ops HIT strip (F5).
 """
 
@@ -27,11 +34,13 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 RULE_COST_GATE = "cost_gate"
+RULE_STALE_QUOTE = "stale_quote"
 
 # Ticker-class default *half*-spread assumptions, in bps of price. Used only
 # when a live quote is unavailable. These are documented assumptions, not
@@ -42,6 +51,58 @@ _ETF_ANCHORS = {"SPY", "QQQ"}
 
 DEFAULT_COST_GATE_BPS_BUDGET = 15.0
 DEFAULT_TURNOVER_BUDGET_PCT = 200.0  # percent of equity per day
+
+# G3 — quote freshness. Retail REST round-trips run ~50-500ms (see
+# docs/WAVE_F_HIT.md / docs/WAVE_G_LATENCY_MAX.md); a few seconds of budget
+# covers normal fetch-then-decide-then-gate latency while still catching a
+# genuinely stale quote (closed market, cached response, slow retry, etc.).
+DEFAULT_MAX_QUOTE_AGE_MS = 5000.0
+
+
+def default_max_quote_age_ms() -> float:
+    """Max age (ms) a live quote may be before G3 treats it as stale.
+
+    Env ``SWARM_HIT_MAX_QUOTE_AGE_MS``.
+    """
+    try:
+        return float(
+            os.environ.get("SWARM_HIT_MAX_QUOTE_AGE_MS") or DEFAULT_MAX_QUOTE_AGE_MS
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_QUOTE_AGE_MS
+
+
+def quote_age_ms(quote: Optional[Dict[str, Any]], *, now: Optional[datetime] = None) -> Optional[float]:
+    """Age of a live quote in ms, from its own ``t`` timestamp — or ``None``.
+
+    Returns ``None`` (never a fabricated number) when ``quote`` is missing,
+    has no timestamp, or the timestamp cannot be parsed. Alpaca quotes use an
+    RFC3339 ``t`` field (e.g. ``2024-01-01T14:30:00.123456789Z``); Python's
+    ``fromisoformat`` cannot parse sub-microsecond precision, so trailing
+    digits beyond microseconds are truncated before parsing (this only
+    affects sub-microsecond precision, i.e. far below anything that changes
+    a staleness verdict at this system's REST-polling latency).
+    """
+    if not isinstance(quote, dict):
+        return None
+    raw_ts = quote.get("t") or quote.get("timestamp")
+    if not raw_ts:
+        return None
+    try:
+        ts = str(raw_ts).replace("Z", "+00:00")
+        if "." in ts:
+            head, _, tail = ts.partition(".")
+            frac, _, tz = tail.partition("+")
+            tz = f"+{tz}" if tz else ""
+            ts = f"{head}.{frac[:6]}{tz}"
+        quote_time = datetime.fromisoformat(ts)
+        if quote_time.tzinfo is None:
+            quote_time = quote_time.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    now_dt = now or datetime.now(timezone.utc)
+    age = (now_dt - quote_time).total_seconds() * 1000.0
+    return max(0.0, age)
 
 
 def default_cost_gate_bps_budget() -> float:
@@ -106,6 +167,10 @@ class CostGateResult:
     turnover_budget: float
     reason: str
     rule: Optional[str] = None
+    # G3 — quote freshness. None when no live quote was used (ticker-class
+    # default) or its timestamp could not be parsed — never fabricated.
+    quote_age_ms: Optional[float] = None
+    max_quote_age_ms: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -123,6 +188,10 @@ class CostGateResult:
             "turnover_budget": round(self.turnover_budget, 2),
             "reason": self.reason,
             "rule": self.rule,
+            "quote_age_ms": (
+                round(self.quote_age_ms, 1) if self.quote_age_ms is not None else None
+            ),
+            "max_quote_age_ms": self.max_quote_age_ms,
         }
 
 
@@ -137,12 +206,21 @@ def evaluate_cost_gate(
     quote: Optional[Dict[str, Any]] = None,
     cost_budget_bps: Optional[float] = None,
     turnover_budget_pct: Optional[float] = None,
+    max_quote_age_ms: Optional[float] = None,
 ) -> CostGateResult:
     """Pre-execute cost/microstructure gate for one proposed HIT trade.
 
     Pure function — no I/O, no network — deliberately easy to unit test.
     Only ``buy``/``short`` (new entries) can be blocked; ``sell``/``cover``/
     ``hold`` always pass through untouched.
+
+    G3 adds a quote-freshness check: a live quote whose own timestamp is
+    older than ``max_quote_age_ms`` (default ``SWARM_HIT_MAX_QUOTE_AGE_MS``)
+    cannot honestly back the cost estimate above, so the entry is rejected
+    (``rule="stale_quote"``) rather than traded on data that may no longer
+    reflect the market. A ticker-class default (no live quote) is never
+    "stale" in this sense — it was never claimed to be live in the first
+    place; it is a separate, already-labeled assumption.
     """
     action_l = (action or "").strip().lower()
     qty_f = abs(float(qty or 0))
@@ -155,11 +233,16 @@ def evaluate_cost_gate(
         turnover_budget_pct if turnover_budget_pct is not None else default_turnover_budget_pct()
     )
     turnover_budget = equity * turnover_budget_frac if equity and equity > 0 else 0.0
+    max_age_ms = float(
+        max_quote_age_ms if max_quote_age_ms is not None else default_max_quote_age_ms()
+    )
 
     half_spread_bps, quote_source = estimate_half_spread_bps(ticker, quote)
     round_trip_bps = round(half_spread_bps * 2.0, 4)
     turnover_before = float(turnover_today or 0.0)
     turnover_after = turnover_before + notional
+
+    age_ms = quote_age_ms(quote) if quote_source == "live_quote" else None
 
     common = dict(
         ticker=ticker,
@@ -171,6 +254,8 @@ def evaluate_cost_gate(
         cost_budget_bps=budget_bps,
         quote_source=quote_source,
         turnover_budget=turnover_budget,
+        quote_age_ms=age_ms,
+        max_quote_age_ms=max_age_ms,
     )
 
     if action_l not in ("buy", "short"):
@@ -179,6 +264,20 @@ def evaluate_cost_gate(
             turnover_before=turnover_before,
             turnover_after=turnover_before,
             reason="Exit/hold — cost gate only applies to new entries (buy/short)",
+            **common,
+        )
+
+    if age_ms is not None and age_ms > max_age_ms:
+        return CostGateResult(
+            approved=False,
+            turnover_before=turnover_before,
+            turnover_after=turnover_before,
+            reason=(
+                f"BLOCKED: live quote is stale ({age_ms:.0f}ms old, "
+                f"max {max_age_ms:.0f}ms) — cannot honestly back a cost estimate "
+                "on data that may no longer reflect the market"
+            ),
+            rule=RULE_STALE_QUOTE,
             **common,
         )
 
@@ -227,6 +326,7 @@ def apply_cost_gate_to_decisions(
     quotes: Optional[Dict[str, Dict[str, Any]]] = None,
     cost_budget_bps: Optional[float] = None,
     turnover_budget_pct: Optional[float] = None,
+    max_quote_age_ms: Optional[float] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Run the cost gate over a decisions dict. Pure — no I/O.
 
@@ -266,6 +366,7 @@ def apply_cost_gate_to_decisions(
             quote=quotes.get(ticker) or quotes.get(str(ticker).upper()),
             cost_budget_bps=cost_budget_bps,
             turnover_budget_pct=turnover_budget_pct,
+            max_quote_age_ms=max_quote_age_ms,
         )
         if result.approved:
             running_turnover = result.turnover_after
@@ -277,11 +378,32 @@ def apply_cost_gate_to_decisions(
     return filtered, rejects
 
 
+def _ws_cached_quote(sym: str) -> Optional[Dict[str, Any]]:
+    """G3 — optional read-only quote WS cache lookup (freshest available).
+
+    Returns ``None`` whenever the WS is disabled (default), never started,
+    not currently connected, or has no fresh cached quote for ``sym`` — the
+    caller always falls back to a REST quote in that case. See
+    ``app/backend/services/hit_quote_ws_service.py``.
+    """
+    try:
+        from app.backend.services.hit_quote_ws_service import get_cached_quote
+
+        return get_cached_quote(sym)
+    except Exception as e:  # pragma: no cover - optional feature, never fatal
+        logger.info("HIT quote WS cache unavailable (%s)", type(e).__name__)
+        return None
+
+
 def fetch_quotes_and_prices(
     tickers: List[str],
 ) -> Tuple[Dict[str, float], Dict[str, Dict[str, Any]]]:
     """Best-effort live quotes + a usable price per ticker (network I/O).
 
+    G3 — prefers a fresh quote from the optional read-only quote WS cache
+    (see ``hit_quote_ws_service.py``) when it is enabled, connected, and has
+    a fresh entry for the ticker; otherwise falls back to a one-shot REST
+    quote fetch (the only path when the WS is disabled — the default).
     Prefers the quote mid-price (also used for the spread estimate); falls
     back to the latest trade price when no usable quote exists. Never
     fabricates a price — a ticker with neither simply is absent from the
@@ -302,10 +424,14 @@ def fetch_quotes_and_prices(
         sym = str(t).strip().upper()
         if not sym or sym in prices:
             continue
-        try:
-            quote = get_latest_quote(sym)
-        except Exception:
-            quote = None
+        quote = _ws_cached_quote(sym)
+        quote_source = "quote_ws" if quote else None
+        if not quote:
+            try:
+                quote = get_latest_quote(sym)
+                quote_source = "rest"
+            except Exception:
+                quote = None
         price: Optional[float] = None
         if isinstance(quote, dict):
             try:
@@ -325,6 +451,8 @@ def fetch_quotes_and_prices(
                 price = None
         if price and price > 0:
             prices[sym] = price
+        if sym in quotes:
+            logger.debug("HIT cost gate: %s quote source=%s", sym, quote_source)
 
     return prices, quotes
 

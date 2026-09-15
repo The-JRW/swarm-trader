@@ -1,13 +1,22 @@
 > Wave F interim doc for The-JRW/swarm-trader. Cross-links:
 > [STRATEGIES_UI.md](./STRATEGIES_UI.md) · [CONTROL_WAVE_B.md](./CONTROL_WAVE_B.md) ·
 > [WAVE_C_ORCHESTRATOR.md](./WAVE_C_ORCHESTRATOR.md) · [WAVE_D.md](./WAVE_D.md) ·
-> [WAVE_E.md](./WAVE_E.md) · [AUTOMATION_A1_A2.md](./AUTOMATION_A1_A2.md)
+> [WAVE_E.md](./WAVE_E.md) · [AUTOMATION_A1_A2.md](./AUTOMATION_A1_A2.md) ·
+> [WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md)
+>
+> **Wave G follow-up (t178u):** [WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md) pushes this
+> stack as close to colocated µs HFT as a paper/broker-REST system honestly can — which is
+> **not very close** — via a fast analyst path, quote-freshness rejection (+ optional
+> read-only quote WS), and a decision→submit→ack→fill latency observatory. Read that doc's
+> honesty section alongside this one; nothing below about HIT ≠ true HFT changes.
 
 # Wave F (F1–F6) — HIT: High-frequency Intraday Turnover
 
-Paper-only follow-up to Waves A–E for **The-JRW/swarm-trader**. Image tag: `strategies-ux-14`.
+Paper-only follow-up to Waves A–E for **The-JRW/swarm-trader**. Image tag: `strategies-ux-15`.
 Feature flags: `hit-mode`, `hit-cost-gate`, `hit-pulse-cron`, `hit-ops-strip`,
-`hit-dry-run-streak` (see `GET /build-info`).
+`hit-dry-run-streak` (see `GET /build-info`). Wave G adds `hit-fast-path`,
+`hit-quote-freshness-gate`, `hit-quote-ws-optional`, `hit-latency-observatory` — see
+[WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md).
 
 ## HIT ≠ true HFT — read this first
 
@@ -44,6 +53,12 @@ cap beyond what is documented below. Specifically, per Reviewer `APPROVE_WAVE_F`
    `SWARM_MONITOR_DRY_RUN` to `false`, `SWARM_AUTO_LAUNCH=true`, or raising any risk cap beyond
    what F1 documents. Paper-only.
 
+> **Update (James override, t175u):** the above reflects the original `APPROVE_WAVE_F`
+> sign-off. James has since overridden amendment #6's trade-count portion for **paper HIT
+> only** — see "James override — trade-count ceiling (t175u)" under F1 below. All other
+> amendments (1–5, and the rest of #6: no live trading, no `SWARM_MONITOR_DRY_RUN=false`,
+> no `SWARM_AUTO_LAUNCH=true`, no leveraged ETFs, mandatory cost gate) remain fully in force.
+
 ## Scope F1–F6
 
 ### F1 — `hit` trading mode (sibling of `day`)
@@ -54,12 +69,14 @@ TQQQ/SOXL or any other leveraged ETF by default):
 | Risk field | `day` | `hit` | Direction |
 |---|---|---|---|
 | `max_position_pct` | 0.15 | **0.07** | smaller per-name |
-| `max_trades_per_day` | 20 | **50** | higher turnover |
+| `max_trades_per_day` | 20 | **5000** ¹ | practically unlimited turnover (was 50) |
 | `max_open_positions` | 8 | **13** | more, smaller positions |
 | `stop_loss_pct` | 0.012 | **0.009** | tighter stop |
 | `flatten_by` | 15:45 | **15:30** | earlier flatten |
 | `min_cash_pct` | 0.10 | **0.15** | higher cash buffer |
 | `allow_leveraged_etfs` | true | **false** | Reviewer amendment — no TQQQ/SOXL |
+
+¹ **James override (t175u), supersedes the Reviewer's original 50/day cap — see below.**
 
 Universe: `mega_cap` (NVDA, AVGO, TSM, AMD, MSFT, AAPL, META, GOOGL, AMZN — same liquid names
 as `day`) + `index_anchors` (SPY, QQQ only). No `momentum` or `etf_direction` (leveraged)
@@ -77,6 +94,28 @@ Alpaca account — `src/accounts.get_account_for_mode("hit")` routes to the `day
 
 Paper-only; refuses live exactly like every other mode (`assert_paper_only()` /
 `alpaca_trading_mode() == "live"` checks are unchanged and apply to `hit` identically).
+
+#### James override — trade-count ceiling (t175u)
+
+The Wave F Reviewer's original `APPROVE_WAVE_F` sign-off capped `hit` at **50 trades/day**
+(amendment #6: "no risk cap raised beyond what F1 documents"). James (repo owner) has since
+overridden that specific cap: **"fuck HIT cap, there is no cap"** — for **paper HIT only**.
+`MODES["hit"]["risk"]["max_trades_per_day"]` is now `5000` (practically unlimited for a
+single trading day; `risk_manager.validate_trade`'s Rule 6 check is `>=` this value, so it
+is not a hard `0`/no-op, just no longer a meaningful ceiling for paper churn). The
+informational `safety_rails.max_trades_per_run` hint in `gather_data.py`'s HIT payload was
+raised to match (`5000`) so agent-facing context doesn't advertise a stale 50-trade cap.
+
+**Everything else from the Reviewer's amendments is unchanged and still enforced in code:**
+`stop_loss_pct`, `trailing_stop_pct`, `daily_loss_limit`, `weekly_loss_limit`,
+`no_buy_if_down_pct`, `max_position_pct`, `max_sector_pct`/per-bucket sector caps,
+`max_open_positions`, `min_cash_pct`, `flatten_eod`/`flatten_by`, `allow_leveraged_etfs: false`
+(no TQQQ/SOXL), the mandatory F2 cost gate, and paper-only (`assert_paper_only()`). Raising
+*how many* trades can happen is not the same as raising *how much* can be risked per trade or
+per day — those caps are exactly where James asked to keep them (many small trades under the
+existing `max_position_pct`, not fewer/larger reckless ones). HIT is still **not** true HFT —
+see "HIT ≠ true HFT" above; this override changes a paper trade-count ceiling, nothing about
+latency, co-location, or execution venue claims.
 
 ### F2 — Cost / microstructure gate (pre-execute, mandatory on HIT)
 
@@ -130,6 +169,11 @@ of sub-second decisioning — every HIT run still goes through the same
 `paper_run_service.execute_paper_run` → `run_hedge_fund` → conviction-digest → risk_manager
 pipeline as every other mode. No bypass of `risk_manager` (no LLM override of hard risk rules).
 
+**Wave G / G2 formalizes and extends this** with a `fast` flag (default `true`, matching this
+preset unchanged) and an explicit, opt-in-only slow path (`apex` + `news_sentiment_analyst`,
+one full LLM call per ticker each) — see
+[WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md#g2--fast-hit-path).
+
 ### F5 — Session HIT Ops strip
 
 `app/backend/services/hit_ops_service.py` persists a small daily counter file
@@ -147,11 +191,17 @@ estimated as if measured. Fill-latency timestamps (`submitted_at` / `filled_at`)
 through only when Alpaca's own order response included them (`src/alpaca_integration.py`'s
 `_place_alpaca_order` does one best-effort follow-up `GET /orders/{id}` when the initial
 response has no `filled_at` yet) — **blank when missing, never fabricated**. There is no
-WebSocket/`trade_updates` client in this codebase (none existed before this wave either); F5
-polls a persisted summary instead of holding a live connection, which also sidesteps Alpaca's
-one-connection-per-account limit on `trade_updates` entirely. The Ops HIT strip card
-(`HitOpsPanel`) never crashes when there is no pulse yet — every field renders a safe blank
-("No HIT pulse yet today.") rather than throwing.
+order/`trade_updates` WebSocket client in this codebase, in this wave or Wave G (see below);
+F5 polls a persisted summary instead of holding a live order-stream connection, which also
+sidesteps Alpaca's one-connection-per-account limit on `trade_updates` entirely. The Ops HIT
+strip card (`HitOpsPanel`) never crashes when there is no pulse yet — every field renders a
+safe blank ("No HIT pulse yet today.") rather than throwing.
+
+**Wave G / G3 adds an *optional*, off-by-default, read-only *market-data* WebSocket** (quotes
+only — still never an order/`trade_updates` stream) with single-connection discipline, and
+**Wave G / G4 extends fill-latency into a decision→submit→ack→fill breakdown**, surfaced in
+this same strip. See [WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md#g3--quote-freshness) and
+[#g4--latency-observatory](./WAVE_G_LATENCY_MAX.md#g4--latency-observatory).
 
 ### F6 — HIT dry-run streak (mirrors A2/E1)
 
@@ -189,9 +239,11 @@ checklist + would-fire/blocked/cost-gate summaries + ack form pattern as A2/E1's
 - HIT execute stays dual-gated off by default: `SWARM_HIT_EXECUTE` absent/false means
   `/cron/hit-pulse` and `/api/automation/hit/pulse` are always analysis-only regardless of the
   request body.
-- No risk cap raised beyond what F1 documents above — `max_position_pct`, `stop_loss_pct`,
-  etc. for `hit` are all inside or tighter than `day`'s existing philosophy, and
-  `allow_leveraged_etfs` is explicitly `false`.
+- No risk cap raised beyond what F1 documents above, **except** `max_trades_per_day` — see
+  "James override — trade-count ceiling (t175u)" above. `max_position_pct`, `stop_loss_pct`,
+  `max_sector_pct`, `max_open_positions`, `min_cash_pct`, etc. for `hit` are all still inside
+  or tighter than `day`'s existing philosophy, and `allow_leveraged_etfs` is explicitly
+  `false`.
 - No invented alpha, turnover, or latency numbers anywhere — see F5's "never fabricated" note.
 
 ## Env (new; all optional, safe defaults)
@@ -204,7 +256,9 @@ checklist + would-fire/blocked/cost-gate summaries + ack form pattern as A2/E1's
 
 No other env var is added or changed by this wave. `SWARM_MONITOR_DRY_RUN`,
 `SWARM_AUTO_LAUNCH`, `SWARM_CRON_EXECUTE_TRADES`, and `ALPACA_TRADING_MODE` keep their
-Wave A–E defaults (see `CONTROL_WAVE_B.md`, `WAVE_C_ORCHESTRATOR.md`, `WAVE_E.md`).
+Wave A–E defaults (see `CONTROL_WAVE_B.md`, `WAVE_C_ORCHESTRATOR.md`, `WAVE_E.md`). Wave G
+adds two more (`SWARM_HIT_MAX_QUOTE_AGE_MS`, `SWARM_HIT_QUOTE_WS_ENABLED`), both with safe
+defaults — see [WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md#env-new-all-optional-safe-defaults).
 
 ## Smoke
 
@@ -246,8 +300,13 @@ turnover accumulation (only priced legs counted), and "never crashes without a p
 default state; the F6 weekday streak counter (increment / reset-on-error / reset-on-gap /
 ack record-only); a source-level guarantee that no HIT service ever references
 `SWARM_MONITOR_DRY_RUN` or writes it, and that no service writes `SWARM_HIT_EXECUTE`; the
-`strategies-ux-14` build-info flags; and the paper-only compose defaults.
+`strategies-ux-15` build-info flags; the paper-only compose defaults; and (James override,
+t175u) that `hit`'s `max_trades_per_day` is now effectively unlimited (`5000`) while every
+other `hit` risk rail stays exactly as F1 documents.
 
 ```bash
 poetry run pytest tests/test_wave_f_hit.py -q
 ```
+
+Wave G adds `tests/test_wave_g_latency_max.py` — see
+[WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md#tests).

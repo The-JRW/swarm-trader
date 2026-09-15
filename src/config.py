@@ -127,7 +127,13 @@ MODES = {
             "daily_loss_limit": 0.03,       # same circuit breaker as day
             "weekly_loss_limit": 0.08,
             "no_buy_if_down_pct": 0.02,
-            "max_trades_per_day": 50,       # higher turnover than day (20)
+            # James override (t175u): "fuck HIT cap, there is no cap" — supersedes the
+            # Wave F Reviewer's 50/day cap for paper HIT only. Practically unlimited
+            # churn; all other risk rails below (stop, daily/weekly loss limits,
+            # position/sector caps, flatten_eod, no leveraged ETFs, min cash, and the
+            # F2 cost gate in cost_gate_service.py) are unchanged. See
+            # docs/WAVE_F_HIT.md "James override" section. Paper-only; HIT ≠ true HFT.
+            "max_trades_per_day": 5000,     # was 50 — James override, effectively unlimited (paper only)
             "max_open_positions": 13,       # more, smaller positions than day (8)
             "min_cash_pct": 0.15,           # higher cash buffer than day (0.10)
             "max_tactical_pct": 1.0,        # no tactical bucket in hit universe

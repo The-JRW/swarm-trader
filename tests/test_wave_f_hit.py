@@ -51,6 +51,74 @@ def test_hit_mode_exists_and_is_tighter_and_more_active_than_day():
     assert hit["flatten_by"] < day["flatten_by"]
 
 
+def test_hit_james_override_trade_count_ceiling_is_effectively_unlimited():
+    """James override (t175u): "there is no cap" — supersedes the Reviewer's 50/day
+    cap for paper HIT only. Every other risk rail stays exactly as F1 documents."""
+    from src.config import get_mode_config
+
+    hit = get_mode_config("hit")["risk"]
+
+    # Practically unlimited for paper churn — not a token bump off 50.
+    assert hit["max_trades_per_day"] >= 1000
+
+    # Everything else the Reviewer's amendments cover is unchanged.
+    assert hit["stop_loss_pct"] == pytest.approx(0.009)
+    assert hit["trailing_stop_pct"] == pytest.approx(0.02)
+    assert hit["daily_loss_limit"] == pytest.approx(0.03)
+    assert hit["weekly_loss_limit"] == pytest.approx(0.08)
+    assert hit["max_position_pct"] == pytest.approx(0.07)
+    assert hit["max_sector_pct"] == pytest.approx(0.50)
+    assert hit["max_open_positions"] == 13
+    assert hit["min_cash_pct"] == pytest.approx(0.15)
+    assert hit["flatten_eod"] is True
+    assert hit["flatten_by"] == "15:30"
+    assert hit["allow_leveraged_etfs"] is False
+
+
+def test_hit_risk_manager_allows_many_trades_in_one_day():
+    """risk_manager.validate_trade does not clamp HIT trade count below the
+    (now effectively unlimited) config value — Rule 6 uses risk['max_trades_per_day']
+    directly, so raising the config value raises the real enforcement too."""
+    from risk_manager import validate_trade
+    from src.config import get_mode_config
+
+    max_trades = get_mode_config("hit")["risk"]["max_trades_per_day"]
+    portfolio_state = {
+        "equity": 100_000.0,
+        "cash": 90_000.0,
+        "cash_pct": 0.9,
+        "daily_pnl_pct": 0.0,
+        "weekly_pnl_pct": 0.0,
+        "positions": {},
+        "sector_alloc": {},
+        "trade_count_today": max_trades - 1,
+        "open_position_count": 0,
+    }
+    result = validate_trade(
+        "NVDA", "buy", 1, 100.0, portfolio_state=portfolio_state, mode="hit"
+    )
+    assert result.approved is True
+
+    portfolio_state["trade_count_today"] = max_trades
+    result = validate_trade(
+        "NVDA", "buy", 1, 100.0, portfolio_state=portfolio_state, mode="hit"
+    )
+    assert result.approved is False
+    assert result.rule == "max_trades_per_day"
+
+
+def test_gather_data_hit_safety_rails_do_not_advertise_stale_trade_cap():
+    """gather_data.py's HIT safety_rails hint must not contradict the real
+    (now effectively unlimited) risk_manager cap by still advertising 50."""
+    src = (ROOT / "gather_data.py").read_text(encoding="utf-8")
+    day_else = src.index('args.mode == "day" else {')
+    hit_if = src.index('args.mode == "hit" else {')
+    hit_block = src[day_else:hit_if]
+    assert "max_trades_per_run" in hit_block
+    assert '"max_trades_per_run": 50,' not in hit_block
+    assert '"max_trades_per_run": 5000' in hit_block
+
+
 def test_hit_mode_blocks_leveraged_etfs_by_default():
     """Reviewer amendment #4 — no TQQQ/SOXL (or any leveraged ETF) in default HIT universe."""
     from src.config import get_mode_config
@@ -577,9 +645,11 @@ def test_build_info_has_wave_f_flags():
         assert flag in src
 
 
-def test_compose_image_tag_is_strategies_ux_14():
+def test_compose_image_tag_is_strategies_ux_15():
+    """James override (t175u) bumped the shipping tag to strategies-ux-15."""
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    assert "strategies-ux-14" in compose
+    assert "strategies-ux-15" in compose
+    assert "strategies-ux-14" not in compose
     assert "strategies-ux-13" not in compose
 
 
@@ -600,9 +670,19 @@ def test_wave_f_docs_state_hit_is_not_true_hft():
     doc = (ROOT / "docs/WAVE_F_HIT.md").read_text(encoding="utf-8")
     assert "not true HFT" in doc or "≠ true HFT" in doc
     assert "co-location" in doc.lower() or "co-lo" in doc.lower()
-    assert "strategies-ux-14" in doc
+    assert "strategies-ux-15" in doc
     assert "SWARM_HIT_EXECUTE" in doc
     assert "SWARM_MONITOR_DRY_RUN" in doc
+
+
+def test_wave_f_docs_note_james_override_of_trade_count_ceiling():
+    """docs/WAVE_F_HIT.md must record the James override (t175u) and make clear
+    HIT is still not true HFT despite the raised trade-count ceiling."""
+    doc = (ROOT / "docs/WAVE_F_HIT.md").read_text(encoding="utf-8")
+    assert "James override" in doc
+    assert "t175u" in doc
+    assert "5000" in doc
+    assert "not true HFT" in doc or "≠ true HFT" in doc
 
 
 def test_no_websocket_client_added_by_this_wave():

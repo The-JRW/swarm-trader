@@ -8,8 +8,8 @@ services:
       dockerfile: Dockerfile.backend
       args:
         GIT_SHA: ${GIT_SHA:-unknown}
-        IMAGE_TAG: strategies-ux-14
-    image: swarm-trader-backend:strategies-ux-14
+        IMAGE_TAG: strategies-ux-15
+    image: swarm-trader-backend:strategies-ux-15
     container_name: swarm-trader-backend
     restart: unless-stopped
     environment:
@@ -22,7 +22,7 @@ services:
       ALPACA_DATA_FEED: ${ALPACA_DATA_FEED:-sip}
       ALPACA_DATA_URL: ${ALPACA_DATA_URL:-https://data.alpaca.markets}
       GIT_SHA: ${GIT_SHA:-unknown}
-      IMAGE_TAG: strategies-ux-14
+      IMAGE_TAG: strategies-ux-15
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       TIINGO_API_KEY: ${TIINGO_API_KEY:-}
       ALPACA_API_KEY: ${ALPACA_API_KEY:-}
@@ -35,6 +35,10 @@ services:
       SWARM_HIT_EXECUTE: ${SWARM_HIT_EXECUTE:-false}
       SWARM_HIT_COST_GATE_BPS: ${SWARM_HIT_COST_GATE_BPS:-15}
       SWARM_HIT_TURNOVER_BUDGET_PCT: ${SWARM_HIT_TURNOVER_BUDGET_PCT:-200}
+      # Wave G — latency-max paper HIT (still NOT colocated µs HFT). G3 quote
+      # freshness + optional read-only quote WS; both default safe/off.
+      SWARM_HIT_MAX_QUOTE_AGE_MS: ${SWARM_HIT_MAX_QUOTE_AGE_MS:-5000}
+      SWARM_HIT_QUOTE_WS_ENABLED: ${SWARM_HIT_QUOTE_WS_ENABLED:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://swarm-master-u73408.vm.elestio.app}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
@@ -52,7 +56,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-    image: swarm-trader-frontend:strategies-ux-14
+    image: swarm-trader-frontend:strategies-ux-15
     container_name: swarm-trader-frontend
     restart: unless-stopped
     depends_on:

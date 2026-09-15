@@ -1,4 +1,5 @@
 """F5 — Ops HIT strip: trades today, turnover, cost-gate rejects, last pulse.
+G4 (Wave G) — latency observatory: decision→submit→ack→fill, in ms.
 
 Persists a small daily counter file under ``/app/data/automation/`` (same
 directory as the rest of Wave A-E automation state) so the Ops/Book UI can
@@ -10,9 +11,18 @@ measured figure**. Turnover in particular is computed only from legs where a
 real reference price was available (from the F2 cost-gate quote fetch);
 legs without one are simply not counted, and the persisted note says so.
 
-Fill-latency timestamps (``submitted_at`` / ``filled_at``) are copied through
-only when Alpaca's order response actually included them; they are blank
-(``None``) when missing — this module never invents a timestamp.
+Latency timestamps (``decision_at`` / ``client_submit_at`` / ``broker_ack_at``
+/ ``submitted_at`` / ``filled_at``) are copied through only when the pipeline
+itself recorded or Alpaca's order response actually included them; each is
+blank (``None``) when missing, and any derived ms duration that would need a
+missing timestamp is also blank — this module never invents a timestamp or a
+duration. ``decision_at`` is this codebase's own clock (when a batch of
+decisions was finalized, post cost-gate, pre-execute); ``client_submit_at``
+is this codebase's own clock immediately before the Alpaca order POST;
+``broker_ack_at`` is Alpaca's own ``created_at``/``submitted_at`` from the
+order response; ``filled_at`` is Alpaca's own fill timestamp. None of these
+require or open a WebSocket — all are ordinary REST response fields plus two
+client-side clock reads.
 """
 
 from __future__ import annotations
@@ -33,6 +43,14 @@ TURNOVER_NOTE = (
     "Gross turnover reflects only legs where a real reference price was "
     "available (from the F2 cost-gate quote/trade fetch) — never fabricated; "
     "some fills may be undercounted rather than estimated."
+)
+
+LATENCY_NOTE = (
+    "G4 — decision/submit are this codebase's own clock reads; ack/fill are "
+    "Alpaca's own order-response timestamps. Any missing stage leaves that "
+    "stage, and durations depending on it, blank — never fabricated. This is "
+    "latency-max paper trading over a broker REST API, not colocated "
+    "microsecond HFT."
 )
 
 
@@ -84,6 +102,7 @@ def _default_state(today: Optional[str] = None) -> Dict[str, Any]:
         "recent_fill_latencies": [],
         "recent_cost_gate_rejects": [],
         "note": TURNOVER_NOTE,
+        "latency_note": LATENCY_NOTE,
         "updated_at": None,
     }
 
@@ -105,23 +124,74 @@ def read_hit_ops() -> Dict[str, Any]:
     return _read_or_reset_today()
 
 
-def _fill_latency(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    submitted = row.get("submitted_at")
-    filled = row.get("filled_at")
-    if not submitted or not filled:
+def _parse_ts(value: Any) -> Optional[datetime]:
+    if not value:
         return None
     try:
-        t0 = datetime.fromisoformat(str(submitted).replace("Z", "+00:00"))
-        t1 = datetime.fromisoformat(str(filled).replace("Z", "+00:00"))
-        latency_ms = max(0, int((t1 - t0).total_seconds() * 1000))
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
+
+
+def _ms_between(a: Optional[datetime], b: Optional[datetime]) -> Optional[int]:
+    """Duration in ms, or ``None`` when either endpoint is missing — never
+    fabricated, and never negative (clock skew/out-of-order timestamps clamp
+    to 0 rather than reporting a nonsensical negative latency)."""
+    if a is None or b is None:
+        return None
+    return max(0, int((b - a).total_seconds() * 1000))
+
+
+def _latency_breakdown(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """G4 — decision→submit→ack→fill latency in ms, from real timestamps
+    only. Requires a real ``filled_at`` (this is fundamentally about
+    completed fills); any other stage timestamp that is missing simply
+    leaves that segment (and any duration depending on it) blank.
+
+    Stages, in order:
+      decision_at      — this codebase's clock when the batch of decisions
+                          was finalized (post cost-gate, pre-execute).
+      client_submit_at — this codebase's clock immediately before the Alpaca
+                          order POST (falls back to Alpaca's own
+                          ``submitted_at`` pre-G4/if absent, so F5's original
+                          ``latency_ms`` measure below is unaffected).
+      broker_ack_at     — Alpaca's own ``created_at``/``submitted_at`` from
+                          the order response (broker-side acknowledgement).
+      filled_at         — Alpaca's own fill timestamp.
+    """
+    filled_at = row.get("filled_at")
+    if not filled_at:
+        return None
+
+    decision_at = row.get("decision_at")
+    client_submit_at = row.get("client_submit_at")
+    broker_ack_at = row.get("broker_ack_at")
+    submitted_at = row.get("submitted_at")
+
+    d = _parse_ts(decision_at)
+    cs = _parse_ts(client_submit_at)
+    ack = _parse_ts(broker_ack_at) or _parse_ts(submitted_at)
+    f = _parse_ts(filled_at)
+    # F5 backward-compat measure: Alpaca's own submitted_at -> filled_at.
+    s_legacy = _parse_ts(submitted_at)
+
+    if not (cs or ack or s_legacy):
+        return None
+
     return {
         "ticker": row.get("ticker"),
         "order_id": row.get("order_id"),
-        "submitted_at": str(submitted),
-        "filled_at": str(filled),
-        "latency_ms": latency_ms,
+        "decision_at": str(decision_at) if decision_at else None,
+        "client_submit_at": str(client_submit_at) if client_submit_at else None,
+        "broker_ack_at": str(broker_ack_at) if broker_ack_at else None,
+        "submitted_at": str(submitted_at) if submitted_at else None,
+        "filled_at": str(filled_at),
+        "decision_to_submit_ms": _ms_between(d, cs),
+        "submit_to_ack_ms": _ms_between(cs, ack),
+        "ack_to_fill_ms": _ms_between(ack, f),
+        "decision_to_fill_ms": _ms_between(d, f),
+        # F5 (unchanged measure) — Alpaca's own submitted_at -> filled_at.
+        "latency_ms": _ms_between(s_legacy, f),
     }
 
 
@@ -153,8 +223,8 @@ def record_hit_run(
     for row in trade_results:
         if not isinstance(row, dict):
             continue
-        if row.get("rule") == "cost_gate":
-            continue  # already counted separately below
+        if row.get("rule") in ("cost_gate", "stale_quote"):
+            continue  # already counted separately below (F2/G3 pre-trade gate rejects)
         if row.get("success"):
             trades_filled += 1
             ticker = str(row.get("ticker") or "").strip().upper()
@@ -165,7 +235,7 @@ def record_hit_run(
                     turnover_add += abs(float(qty or 0)) * float(price)
                 except (TypeError, ValueError):
                     pass
-        latency = _fill_latency(row)
+        latency = _latency_breakdown(row)
         if latency:
             latencies.append(latency)
 
@@ -193,6 +263,7 @@ def record_hit_run(
         list(cost_gate_rejects) + list(state.get("recent_cost_gate_rejects") or [])
     )[:RECENT_MAX]
     state["note"] = TURNOVER_NOTE
+    state["latency_note"] = LATENCY_NOTE
     state["updated_at"] = _now_iso()
 
     _atomic_write(_hit_ops_path(), state)

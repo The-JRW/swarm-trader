@@ -15,9 +15,36 @@ When omitted, the current trading mode (from trading_mode.json) is used.
 
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.accounts import get_account_for_mode, AlpacaAccount
+
+
+def _now_iso_ms() -> str:
+    """UTC now, ISO-8601, millisecond precision — G4 latency-observatory
+    client-side clock reads (never a broker/server timestamp)."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _post_order_with_timing(url: str, headers: dict, order_data: dict, timeout: int = 10):
+    """POST one order, capturing G4 decision→submit→ack→fill timestamps.
+
+    Returns ``(order_json_or_None, timing, response)``. ``timing`` always has
+    ``client_submit_at`` — this module's own clock read immediately before
+    the request — and ``broker_ack_at``, which is Alpaca's own
+    ``created_at``/``submitted_at`` from the response (the earliest
+    broker-side acknowledgement available), populated only when the POST
+    succeeded. Neither is ever fabricated; a failed POST yields
+    ``broker_ack_at=None``.
+    """
+    client_submit_at = _now_iso_ms()
+    resp = requests.post(url, headers=headers, json=order_data, timeout=timeout)
+    timing = {"client_submit_at": client_submit_at, "broker_ack_at": None}
+    if resp.status_code in (200, 201):
+        order = resp.json()
+        timing["broker_ack_at"] = order.get("created_at") or order.get("submitted_at")
+        return order, timing, resp
+    return None, timing, resp
 
 def _get_account(mode: str = None) -> AlpacaAccount:
     """Get the Alpaca account (credentials + base_url) for the trading mode."""
@@ -167,18 +194,18 @@ def _place_alpaca_order(ticker: str, action: str, qty: int, mode: str = None) ->
         "type": "market",
         "time_in_force": "day",
     }
-    resp = requests.post(
-        f"{_get_base_url(mode)}/orders",
-        headers=headers,
-        json=order_data,
-        timeout=10,
+    order, timing, resp = _post_order_with_timing(
+        f"{_get_base_url(mode)}/orders", headers, order_data
     )
-    if resp.status_code in (200, 201):
-        order = resp.json()
+    if order is not None:
         result = {
             "success": True,
             "order_id": order.get("id"),
             "status": order.get("status"),
+            # G4 — latency observatory: client-side submit clock + broker ack
+            # (Alpaca's own created_at/submitted_at). Never fabricated.
+            "client_submit_at": timing["client_submit_at"],
+            "broker_ack_at": timing["broker_ack_at"],
             # F5 — fill-latency timestamps when Alpaca already returned them on
             # the initial order response; left absent otherwise (never
             # fabricated). Paper market orders on liquid names often fill
@@ -193,12 +220,14 @@ def _place_alpaca_order(ticker: str, action: str, qty: int, mode: str = None) ->
                     result["status"] = refreshed.get("status") or result["status"]
                     result["submitted_at"] = refreshed.get("submitted_at") or result["submitted_at"]
                     result["filled_at"] = refreshed.get("filled_at") or result["filled_at"]
+                    result["broker_ack_at"] = result["broker_ack_at"] or refreshed.get("created_at")
             except Exception:
                 pass  # best-effort only — never fabricate a timestamp
         return result
     return {
         "success": False,
         "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}",
+        "client_submit_at": timing["client_submit_at"],
     }
 
 
@@ -235,14 +264,10 @@ def _place_bracket_order(
         "stop_loss": {"stop_price": str(round(stop_price, 2))},
         "take_profit": {"limit_price": str(round(take_profit_price, 2))},
     }
-    resp = requests.post(
-        f"{_get_base_url(mode)}/orders",
-        headers=headers,
-        json=order_data,
-        timeout=10,
+    order, timing, resp = _post_order_with_timing(
+        f"{_get_base_url(mode)}/orders", headers, order_data
     )
-    if resp.status_code in (200, 201):
-        order = resp.json()
+    if order is not None:
         return {
             "success": True,
             "order_id": order.get("id"),
@@ -250,10 +275,16 @@ def _place_bracket_order(
             "order_class": "bracket",
             "stop_price": stop_price,
             "take_profit_price": take_profit_price,
+            # G4 — latency observatory (see _post_order_with_timing).
+            "client_submit_at": timing["client_submit_at"],
+            "broker_ack_at": timing["broker_ack_at"],
+            "submitted_at": order.get("submitted_at"),
+            "filled_at": order.get("filled_at"),
         }
     return {
         "success": False,
         "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}",
+        "client_submit_at": timing["client_submit_at"],
     }
 
 
@@ -340,6 +371,7 @@ def execute_decisions(
     account: dict,
     dry_run: bool = True,
     mode: str = None,
+    decision_at: str = None,
 ) -> list[dict]:
     """Execute trading decisions with V2 risk validation.
 
@@ -354,6 +386,12 @@ def execute_decisions(
         account: Raw Alpaca account dict
         dry_run: If True, validate but don't actually place orders
         mode: Trading mode ("swing" or "day"). Resolved from env if not specified.
+        decision_at: G4 (Wave G) — an ISO timestamp the caller captured when
+                   this batch of decisions was finalized (post-analysis,
+                   pre-execute). Attached verbatim to every placed order's
+                   result so the HIT Ops strip can show decision→submit→
+                   ack→fill. Optional; omitted from results entirely when
+                   not provided — never fabricated here.
 
     Returns:
         List of result dicts with success/failure info per ticker
@@ -466,13 +504,16 @@ def execute_decisions(
                 order_result = _place_trailing_stop(ticker, action, qty, float(trail_percent), mode=mode)
             else:
                 order_result = _place_alpaca_order(ticker, action, qty, mode=mode)
-            results.append({
+            row = {
                 "ticker": ticker,
                 "action": action,
                 "qty": qty,
                 "confidence": confidence,
                 **order_result,
-            })
+            }
+            if decision_at:
+                row["decision_at"] = decision_at
+            results.append(row)
 
     return results
 
@@ -667,17 +708,24 @@ def _place_limit_order(
         "time_in_force": time_in_force,
         "limit_price": str(round(limit_price, 2)),
     }
-    resp = requests.post(f"{_get_base_url(mode)}/orders", headers=headers, json=order_data, timeout=10)
-    if resp.status_code in (200, 201):
-        order = resp.json()
+    order, timing, resp = _post_order_with_timing(f"{_get_base_url(mode)}/orders", headers, order_data)
+    if order is not None:
         return {
             "success": True,
             "order_id": order.get("id"),
             "status": order.get("status"),
             "order_type": "limit",
             "limit_price": limit_price,
+            "client_submit_at": timing["client_submit_at"],
+            "broker_ack_at": timing["broker_ack_at"],
+            "submitted_at": order.get("submitted_at"),
+            "filled_at": order.get("filled_at"),
         }
-    return {"success": False, "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}"}
+    return {
+        "success": False,
+        "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}",
+        "client_submit_at": timing["client_submit_at"],
+    }
 
 
 def _place_stop_order(
@@ -702,17 +750,24 @@ def _place_stop_order(
         "time_in_force": time_in_force,
         "stop_price": str(round(stop_price, 2)),
     }
-    resp = requests.post(f"{_get_base_url(mode)}/orders", headers=headers, json=order_data, timeout=10)
-    if resp.status_code in (200, 201):
-        order = resp.json()
+    order, timing, resp = _post_order_with_timing(f"{_get_base_url(mode)}/orders", headers, order_data)
+    if order is not None:
         return {
             "success": True,
             "order_id": order.get("id"),
             "status": order.get("status"),
             "order_type": "stop",
             "stop_price": stop_price,
+            "client_submit_at": timing["client_submit_at"],
+            "broker_ack_at": timing["broker_ack_at"],
+            "submitted_at": order.get("submitted_at"),
+            "filled_at": order.get("filled_at"),
         }
-    return {"success": False, "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}"}
+    return {
+        "success": False,
+        "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}",
+        "client_submit_at": timing["client_submit_at"],
+    }
 
 
 def _place_trailing_stop(
@@ -739,17 +794,24 @@ def _place_trailing_stop(
         "time_in_force": time_in_force,
         "trail_percent": str(round(trail_percent, 2)),
     }
-    resp = requests.post(f"{_get_base_url(mode)}/orders", headers=headers, json=order_data, timeout=10)
-    if resp.status_code in (200, 201):
-        order = resp.json()
+    order, timing, resp = _post_order_with_timing(f"{_get_base_url(mode)}/orders", headers, order_data)
+    if order is not None:
         return {
             "success": True,
             "order_id": order.get("id"),
             "status": order.get("status"),
             "order_type": "trailing_stop",
             "trail_percent": trail_percent,
+            "client_submit_at": timing["client_submit_at"],
+            "broker_ack_at": timing["broker_ack_at"],
+            "submitted_at": order.get("submitted_at"),
+            "filled_at": order.get("filled_at"),
         }
-    return {"success": False, "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}"}
+    return {
+        "success": False,
+        "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}",
+        "client_submit_at": timing["client_submit_at"],
+    }
 
 
 def _place_oco_order(
@@ -777,9 +839,8 @@ def _place_oco_order(
         "stop_loss": {"stop_price": str(round(stop_price, 2))},
         "take_profit": {"limit_price": str(round(take_profit_price, 2))},
     }
-    resp = requests.post(f"{_get_base_url(mode)}/orders", headers=headers, json=order_data, timeout=10)
-    if resp.status_code in (200, 201):
-        order = resp.json()
+    order, timing, resp = _post_order_with_timing(f"{_get_base_url(mode)}/orders", headers, order_data)
+    if order is not None:
         return {
             "success": True,
             "order_id": order.get("id"),
@@ -787,8 +848,16 @@ def _place_oco_order(
             "order_class": "oco",
             "stop_price": stop_price,
             "take_profit_price": take_profit_price,
+            "client_submit_at": timing["client_submit_at"],
+            "broker_ack_at": timing["broker_ack_at"],
+            "submitted_at": order.get("submitted_at"),
+            "filled_at": order.get("filled_at"),
         }
-    return {"success": False, "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}"}
+    return {
+        "success": False,
+        "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}",
+        "client_submit_at": timing["client_submit_at"],
+    }
 
 
 def format_positions_summary(positions_raw: list[dict], account: dict) -> str:
