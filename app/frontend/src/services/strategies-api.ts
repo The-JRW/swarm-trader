@@ -583,12 +583,26 @@ export interface AutoResearchQueueResponse {
   source_files?: string[];
 }
 
-/** F5 — Ops HIT strip. HIT = High-frequency Intraday Turnover (paper), NOT true HFT. */
+/**
+ * F5/G4 — Ops HIT strip latency observatory. HIT = High-frequency Intraday
+ * Turnover (paper), NOT true HFT, NOT colocated µs HFT (see
+ * docs/WAVE_G_LATENCY_MAX.md). decision/client_submit are this codebase's
+ * own clock reads; broker_ack/filled are Alpaca's own order-response
+ * timestamps. Any field can be null — never fabricated.
+ */
 export interface HitFillLatency {
   ticker?: string | null;
   order_id?: string | null;
+  decision_at?: string | null;
+  client_submit_at?: string | null;
+  broker_ack_at?: string | null;
   submitted_at?: string | null;
   filled_at?: string | null;
+  decision_to_submit_ms?: number | null;
+  submit_to_ack_ms?: number | null;
+  ack_to_fill_ms?: number | null;
+  decision_to_fill_ms?: number | null;
+  /** F5 (unchanged measure) — Alpaca's own submitted_at -> filled_at. */
   latency_ms?: number | null;
 }
 
@@ -601,7 +615,12 @@ export interface HitCostGateReject {
   round_trip_cost_bps?: number | null;
   cost_budget_bps?: number | null;
   quote_source?: string | null;
+  /** G3 — age (ms) of the live quote backing this check; null when a
+   * ticker-class default was used instead (never claimed to be "live"). */
+  quote_age_ms?: number | null;
+  max_quote_age_ms?: number | null;
   reason?: string | null;
+  /** "cost_gate" (bps/turnover, Wave F) | "stale_quote" (G3) */
   rule?: string | null;
 }
 
@@ -627,6 +646,8 @@ export interface HitOps {
   recent_fill_latencies: HitFillLatency[];
   recent_cost_gate_rejects: HitCostGateReject[];
   note?: string;
+  /** G4 — latency-observatory honesty note (see docs/WAVE_G_LATENCY_MAX.md). */
+  latency_note?: string;
   updated_at?: string | null;
   paper_only?: boolean;
   hit_execute_env_allows?: boolean;
@@ -668,6 +689,10 @@ export interface HitPulseResponse {
   mode: string;
   tickers: string[];
   strategy_ids: string[];
+  /** G2 — true (default): fast analyst preset only. false: also includes
+   * apex + news_sentiment_analyst (slow path — one full LLM call per ticker
+   * each). See docs/WAVE_G_LATENCY_MAX.md. */
+  fast?: boolean;
   execute_trades: boolean;
   execute_requested: boolean;
   hit_execute_env_allows?: boolean;
@@ -675,6 +700,7 @@ export interface HitPulseResponse {
   paper_only: boolean;
   message?: string;
   cadence_note?: string;
+  fast_path_note?: string;
 }
 
 async function parseError(response: Response): Promise<string> {
@@ -1008,11 +1034,13 @@ export const strategiesApi = {
     return response.json();
   },
 
-  /** F3 — UI-facing HIT pulse trigger. Analysis-only unless SWARM_HIT_EXECUTE ∧ requested. */
+  /** F3 — UI-facing HIT pulse trigger. Analysis-only unless SWARM_HIT_EXECUTE ∧ requested.
+   * G2 — `fast` defaults true server-side when omitted (fast analyst preset only). */
   runHitPulse: async (body?: {
     tickers?: string[];
     execute_trades?: boolean;
     top_n?: number;
+    fast?: boolean;
   }): Promise<HitPulseResponse> => {
     const response = await fetch(`${getApiBaseUrl()}/automation/hit/pulse`, {
       method: 'POST',
