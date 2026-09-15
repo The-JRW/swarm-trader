@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.backend.dependencies.cron_auth import require_cron_secret
 from app.backend.models.schemas import ErrorResponse, PaperRunStatusResponse
 from app.backend.services.automation_store import (
+    auto_launch_env_allows,
     cron_execute_env_allows,
     read_cron_recipe,
     read_last_monitor,
@@ -410,4 +411,114 @@ async def cron_performance_snapshot(force: bool = False):
             detail=result.get("error") or "Snapshot failed",
         )
     return result
+
+
+class CronSwarmScanRequest(BaseModel):
+    """C4 — Cron swarm scan. apply_recipe/launch only if SWARM_AUTO_LAUNCH truthy."""
+
+    apply_recipe: bool = Field(
+        default=False,
+        description="Apply top candidates to recipe — ignored unless SWARM_AUTO_LAUNCH",
+    )
+    launch: bool = Field(
+        default=False,
+        description="Launch paper analysis — ignored unless SWARM_AUTO_LAUNCH",
+    )
+    intersect_universe: bool = Field(
+        default=True,
+        description="Intersect with mode universe (default ON)",
+    )
+    mode: Optional[str] = Field(default=None, description="swing|day|auto")
+    top_n: int = Field(default=15, ge=1, le=15)
+
+
+@router.post(
+    "/cron/swarm-scan",
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}},
+)
+async def cron_swarm_scan(body: Optional[CronSwarmScanRequest] = None):
+    """C4 — Secret-gated swarm scan. Default scan-only.
+
+    ``apply_recipe`` / ``launch`` honored only when ``SWARM_AUTO_LAUNCH`` is truthy.
+    Launch = paper analysis; execute_trades still dual-gated separately (defaults off).
+    Never flips SWARM_MONITOR_DRY_RUN or live trading.
+    """
+    from app.backend.services.swarm_scan_service import (
+        apply_scan_to_recipe,
+        launch_analysis_from_recipe,
+        run_swarm_scan,
+    )
+
+    body = body or CronSwarmScanRequest()
+    mode = body.mode
+    if mode is not None:
+        mode = mode.strip().lower()
+        if mode not in ("swing", "day", "auto"):
+            raise HTTPException(status_code=400, detail="mode must be swing|day|auto")
+
+    try:
+        assert_paper_only()
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=f"FAIL_CLOSED: {e}") from e
+
+    if alpaca_trading_mode() == "live":
+        raise HTTPException(
+            status_code=403,
+            detail="FAIL_CLOSED: cron swarm-scan refuses ALPACA_TRADING_MODE=live",
+        )
+
+    try:
+        scan_result = run_swarm_scan(
+            mode=mode,
+            intersect_universe=bool(body.intersect_universe),
+            persist=True,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Scan failed ({type(e).__name__})"
+        ) from e
+
+    auto = auto_launch_env_allows()
+    applied = None
+    launched = None
+    notes = []
+
+    if body.apply_recipe or body.launch:
+        if not auto:
+            notes.append(
+                "SWARM_AUTO_LAUNCH absent/false — scan-only; apply_recipe/launch ignored"
+            )
+        else:
+            if body.apply_recipe:
+                try:
+                    applied = apply_scan_to_recipe(top_n=int(body.top_n))
+                except Exception as e:
+                    notes.append(f"apply_recipe failed: {type(e).__name__}")
+            if body.launch:
+                try:
+                    # Analysis-only via cron auto path (execute still dual-gated elsewhere)
+                    launched = launch_analysis_from_recipe(execute_trades=False)
+                except PermissionError as e:
+                    notes.append(f"launch blocked: {e}")
+                except Exception as e:
+                    notes.append(f"launch failed: {type(e).__name__}")
+
+    return {
+        "paper_only": True,
+        "scan": {
+            "timestamp": scan_result.get("timestamp"),
+            "mode": scan_result.get("mode"),
+            "intersect_universe": scan_result.get("intersect_universe"),
+            "candidate_count": scan_result.get("candidate_count"),
+            "tickers": scan_result.get("tickers"),
+            "candidates": scan_result.get("candidates"),
+        },
+        "auto_launch_env_allows": auto,
+        "apply_recipe_requested": bool(body.apply_recipe),
+        "launch_requested": bool(body.launch),
+        "applied": applied,
+        "launched": launched,
+        "notes": notes,
+        "message": "scan-only" if not auto else "scan (+ optional apply/launch)",
+    }
 
