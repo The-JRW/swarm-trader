@@ -125,6 +125,11 @@ Before setting `SWARM_MONITOR_DRY_RUN=false` in Elestio:
 
 Until then, leave env at `true` and call with `{"dry_run":true}` (or omit `dry_run`).
 
+**Wave E update:** progress toward (1) is now tracked automatically — every dry-run weekday
+monitor call updates a persisted streak counter, and (2) has an in-app ack record. See
+[WAVE_E.md](./WAVE_E.md#e1--a2-dry-run-streak--exit-checklist) — `GET /api/automation/dry-run-streak`.
+No UI control flips `SWARM_MONITOR_DRY_RUN`; that still requires an Elestio env change.
+
 ## Status files
 
 Written under `/app/data/automation/` (compose volume `swarm_data`):

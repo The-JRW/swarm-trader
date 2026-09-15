@@ -1,5 +1,10 @@
 > Wave D interim doc for The-JRW/swarm-trader. Cross-links:
 > [STRATEGIES_UI.md](./STRATEGIES_UI.md) · [CONTROL_WAVE_B.md](./CONTROL_WAVE_B.md) · [WAVE_C_ORCHESTRATOR.md](./WAVE_C_ORCHESTRATOR.md)
+>
+> **Wave E update:** the dry-run streak checklist, real performance snapshot details, a session
+> digest center, a mode auto-resolver (with a persisted reason), an empty-book redeploy banner,
+> and an AutoResearch review queue stub land in [WAVE_E.md](./WAVE_E.md) — see that doc for the
+> current `strategies-ux-13` build.
 
 # Wave D (D1–D6) — Run/Book IA, risk glance, sector-aware apply, hints
 

@@ -109,3 +109,13 @@ Strategies is split into two panes behind one tab bar — full detail in [WAVE_D
 New read-only endpoints: `GET /api/automation/risk-policy` (hard risk caps, display only) and
 `GET /api/automation/recipe-hints` (display-only next-Apply suggestions). Apply-to-recipe is
 sector-aware and reports skip reasons when sector caps trim tickers.
+
+## Wave E update (strategies-ux-13)
+
+The Book pane now also shows an **A2 dry-run exit checklist** (streak + ack, no control that
+flips `SWARM_MONITOR_DRY_RUN`), a **session digest center** (real run fields only), and an
+**AutoResearch review queue** (display/UX-only approve/reject — never writes `strategy.py`).
+The Run pane's Trading mode card shows the real VIX/gap/calendar reason when mode is `auto`
+(human override still wins), and shows an empty-book redeploy banner when positions are zero and
+cash is above a threshold. The perf strip's **Details** button now opens a drawer of recent real
+snapshots. Full detail in [WAVE_E.md](./WAVE_E.md).
