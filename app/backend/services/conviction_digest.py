@@ -171,3 +171,85 @@ def compute_conviction_digest(
         "ticker_count": len(ticker_set),
         "source": "analyst_signals",
     }
+
+
+HINTS_NOTE = (
+    "Display-only suggestions for the next Apply. Nothing is written to the cron "
+    "recipe without an explicit Apply from the user."
+)
+
+
+def build_recipe_hints(
+    digest: Optional[Dict[str, Any]],
+    *,
+    current_tickers: Optional[List[str]] = None,
+    limit: int = 15,
+) -> Dict[str, Any]:
+    """D5 — turn a conviction digest into next-recipe hints (never auto-applied).
+
+    Contested tickers rank first (the swarm disagreed, so another paper pass is
+    the most informative), then consensus names. Risk-rejected tickers are
+    reported as excluded, never suggested.
+    """
+    cap = max(1, min(int(limit or 15), 15))
+    digest = digest if isinstance(digest, dict) else {}
+    current = {str(t).strip().upper() for t in (current_tickers or []) if t}
+
+    hints: List[Dict[str, Any]] = []
+    seen: set = set()
+    rejected = {
+        str(r.get("ticker") or "").strip().upper()
+        for r in (digest.get("risk_rejected") or [])
+        if isinstance(r, dict) and r.get("ticker")
+    }
+
+    def _add(ticker: Any, kind: str, reason: str) -> None:
+        sym = str(ticker or "").strip().upper()
+        if not sym or sym in seen or sym in rejected or len(hints) >= cap:
+            return
+        seen.add(sym)
+        hints.append(
+            {
+                "ticker": sym,
+                "kind": kind,
+                "reason": reason,
+                "in_current_recipe": sym in current,
+            }
+        )
+
+    for c in digest.get("contested") or []:
+        if not isinstance(c, dict):
+            continue
+        bull = c.get("bullish") or 0
+        bear = c.get("bearish") or 0
+        _add(c.get("ticker"), "contested", f"contested — bull {bull} / bear {bear}, worth another pass")
+
+    for c in digest.get("consensus") or []:
+        if not isinstance(c, dict):
+            continue
+        direction = str(c.get("direction") or "").lower() or "agree"
+        agree = c.get("agree") or 0
+        total = c.get("total") or 0
+        _add(c.get("ticker"), "consensus", f"consensus {direction} ({agree}/{total} analysts)")
+
+    excluded = [
+        {
+            "ticker": str(r.get("ticker") or "").strip().upper(),
+            "kind": "risk_rejected",
+            "reason": str(r.get("reason") or "risk manager blocked entry"),
+        }
+        for r in (digest.get("risk_rejected") or [])
+        if isinstance(r, dict) and r.get("ticker")
+    ]
+
+    return {
+        "suggested_tickers": [h["ticker"] for h in hints],
+        "hints": hints,
+        "excluded": excluded,
+        "cap": cap,
+        "display_only": True,
+        "auto_write": False,
+        "requires_explicit_apply": True,
+        "source": digest.get("source") or "conviction_digest",
+        "note": HINTS_NOTE,
+    }

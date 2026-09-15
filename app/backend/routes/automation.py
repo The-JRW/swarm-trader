@@ -16,11 +16,14 @@ from app.backend.services.automation_store import (
     auto_launch_env_allows,
     cron_execute_env_allows,
     read_cron_recipe,
+    read_last_conviction_digest,
     read_ops_status,
     read_scan_history,
     write_cron_recipe,
 )
+from app.backend.services.conviction_digest import build_recipe_hints
 from app.backend.services.portfolio_monitor_service import monitor_dry_run_env_default
+from app.backend.services.risk_policy_service import get_risk_policy
 from app.backend.services.swarm_scan_service import (
     apply_scan_to_recipe,
     get_last_scan_payload,
@@ -145,6 +148,13 @@ class ApplyScanRequest(BaseModel):
     tickers: Optional[List[str]] = Field(
         default=None, description="Optional explicit tickers (still capped at 15)"
     )
+    sector_aware: bool = Field(
+        default=True,
+        description="D3 — diversify underweight sectors first, then fill (skip reasons reported)",
+    )
+    mode: Optional[str] = Field(
+        default=None, description="Universe/sector policy mode — defaults to recipe mode"
+    )
 
     @field_validator("tickers")
     @classmethod
@@ -209,10 +219,20 @@ async def automation_swarm_scan_get():
 
 @router.post("/automation/swarm-scan/apply")
 async def automation_swarm_scan_apply(body: Optional[ApplyScanRequest] = None):
-    """C2 — Apply top N (≤15) candidates to cron recipe tickers."""
+    """C2 + D3 — Apply top N (≤15) candidates to cron recipe, sector-aware."""
     body = body or ApplyScanRequest()
+    mode = body.mode
+    if mode is not None:
+        mode = mode.strip().lower()
+        if mode not in ("swing", "day", "auto"):
+            raise HTTPException(status_code=400, detail="mode must be swing|day|auto")
     try:
-        return apply_scan_to_recipe(top_n=body.top_n, tickers=body.tickers)
+        return apply_scan_to_recipe(
+            top_n=body.top_n,
+            tickers=body.tickers,
+            sector_aware=bool(body.sector_aware),
+            mode=mode,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -242,3 +262,37 @@ async def automation_swarm_scan_launch(body: Optional[LaunchFromScanRequest] = N
         raise HTTPException(
             status_code=500, detail=f"Launch failed ({type(e).__name__})"
         ) from e
+
+
+@router.get("/automation/risk-policy")
+async def automation_risk_policy(mode: Optional[str] = None):
+    """D2 — Read-only hard risk caps for the mode (display only, no override)."""
+    if mode is not None:
+        mode = mode.strip().lower()
+        if mode and mode not in ("swing", "day", "auto"):
+            raise HTTPException(status_code=400, detail="mode must be swing|day|auto")
+    try:
+        return get_risk_policy(mode)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Risk policy unavailable ({type(e).__name__})"
+        ) from e
+
+
+@router.get("/automation/recipe-hints")
+async def automation_recipe_hints():
+    """D5 — Display-only next-recipe hints from the last conviction digest.
+
+    Never writes the recipe: the UI must call the apply endpoint explicitly.
+    """
+    wrap = read_last_conviction_digest() or {}
+    digest = wrap.get("digest") if isinstance(wrap, dict) else None
+    recipe = read_cron_recipe()
+    hints = build_recipe_hints(digest, current_tickers=recipe.get("tickers") or [])
+    return {
+        **hints,
+        "run_id": wrap.get("run_id") if isinstance(wrap, dict) else None,
+        "digest_updated_at": wrap.get("updated_at") if isinstance(wrap, dict) else None,
+        "current_recipe_tickers": recipe.get("tickers") or [],
+        "paper_only": True,
+    }

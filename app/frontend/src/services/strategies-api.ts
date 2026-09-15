@@ -270,6 +270,111 @@ export interface ScanHistoryEntry {
   paper_only?: boolean;
 }
 
+/** D2 — read-only hard risk caps (display only; never widened from the UI). */
+export interface RiskPolicySector {
+  key: string;
+  label: string;
+  max_sector_pct?: number | null;
+  max_per_stock_pct?: number | null;
+  ticker_count?: number;
+  tickers?: string[];
+}
+
+export interface RiskPolicyCircuitBreaker {
+  rule: string;
+  label: string;
+  limit_pct?: number | null;
+  effect?: string;
+}
+
+export interface RiskPolicy {
+  paper_only: boolean;
+  read_only: boolean;
+  mode: string;
+  mode_label?: string;
+  caps: {
+    max_position_pct?: number | null;
+    max_sector_pct?: number | null;
+    max_tactical_pct?: number | null;
+    min_cash_pct?: number | null;
+    stop_loss_pct?: number | null;
+    trailing_stop_pct?: number | null;
+    max_trades_per_day?: number | null;
+    max_open_positions?: number | null;
+  };
+  sectors: RiskPolicySector[];
+  circuit_breakers: RiskPolicyCircuitBreaker[];
+  flatten: { flatten_eod: boolean; flatten_by?: string | null };
+  blocklists?: {
+    leveraged_etfs_allowed?: boolean;
+    leveraged_etfs?: string[];
+    moonshots_blocked_all_modes?: boolean;
+    moonshots?: string[];
+  };
+  source?: string;
+  note?: string;
+}
+
+/** D3 — sector-aware apply telemetry. */
+export interface ApplySectorRow {
+  sector: string;
+  label: string;
+  picked: number;
+  slot_cap: number;
+  max_sector_pct?: number | null;
+  candidates_seen?: number;
+  in_current_recipe?: number;
+}
+
+export interface ApplySkippedRow {
+  symbol: string;
+  sector?: string;
+  sector_label?: string;
+  kind: 'sector_cap' | 'slot_cap' | string;
+  reason: string;
+}
+
+export interface ApplyScanResponse {
+  recipe: CronRecipe;
+  applied_tickers: string[];
+  applied_count: number;
+  cap: number;
+  candidates: ScanCandidate[];
+  sector_aware?: boolean;
+  sector_mode?: string;
+  sectors?: ApplySectorRow[];
+  skipped?: ApplySkippedRow[];
+  skipped_count?: number;
+  sector_caps_trimmed?: boolean;
+  candidate_pool_count?: number;
+  notes?: string[];
+  paper_only: boolean;
+}
+
+/** D5 — display-only next-recipe hints; never auto-written. */
+export interface RecipeHint {
+  ticker: string;
+  kind: 'contested' | 'consensus' | string;
+  reason: string;
+  in_current_recipe?: boolean;
+}
+
+export interface RecipeHintsResponse {
+  suggested_tickers: string[];
+  hints: RecipeHint[];
+  excluded: Array<{ ticker: string; kind: string; reason: string }>;
+  cap: number;
+  display_only: boolean;
+  auto_write: boolean;
+  requires_explicit_apply: boolean;
+  source?: string;
+  note?: string;
+  run_id?: string | null;
+  digest_updated_at?: string | null;
+  current_recipe_tickers?: string[];
+  paper_only?: boolean;
+}
+
 export interface AutomationOpsStatus {
   paper_only: boolean;
   monitor_dry_run_env: boolean;
@@ -508,19 +613,29 @@ export const strategiesApi = {
   applyScanToRecipe: async (body?: {
     top_n?: number;
     tickers?: string[];
-  }): Promise<{
-    recipe: CronRecipe;
-    applied_tickers: string[];
-    applied_count: number;
-    cap: number;
-    candidates: ScanCandidate[];
-    paper_only: boolean;
-  }> => {
+    sector_aware?: boolean;
+    mode?: string;
+  }): Promise<ApplyScanResponse> => {
     const response = await fetch(`${getApiBaseUrl()}/automation/swarm-scan/apply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || { top_n: 15 }),
+      body: JSON.stringify(body || { top_n: 15, sector_aware: true }),
     });
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** D2 — read-only risk caps. No write counterpart by design. */
+  getRiskPolicy: async (mode?: string): Promise<RiskPolicy> => {
+    const qs = mode ? `?mode=${encodeURIComponent(mode)}` : '';
+    const response = await fetch(`${getApiBaseUrl()}/automation/risk-policy${qs}`);
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** D5 — display-only hints; applying still goes through applyScanToRecipe. */
+  getRecipeHints: async (): Promise<RecipeHintsResponse> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/recipe-hints`);
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();
   },

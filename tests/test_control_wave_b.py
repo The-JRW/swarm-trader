@@ -173,7 +173,9 @@ def test_build_info_has_control_wave_b():
     assert "conviction-digest" in src
 
 
-def test_image_tag_ux_11():
+def test_image_tag_is_current_wave():
+    """Compose tracks the shipping image tag (Wave D → strategies-ux-12)."""
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    assert "strategies-ux-11" in compose
+    assert "strategies-ux-12" in compose
+    assert "strategies-ux-11" not in compose
     assert "strategies-ux-9" not in compose

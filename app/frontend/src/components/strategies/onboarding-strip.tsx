@@ -45,8 +45,10 @@ export function OnboardingStrip({ onOpenStrategies, className }: OnboardingStrip
         <Badge variant="outline">Easy path</Badge>
       </div>
       <div className="text-sm text-primary">
-        Start with <span className="font-semibold">Strategies</span>: pick swing/day mode, select agents,
-        enter tickers, and run a paper analysis — without building a flow graph.
+        Start with <span className="font-semibold">Strategies</span>: the <span className="font-semibold">Run</span>{' '}
+        pane picks swing/day mode, agents, and tickers for a paper analysis; the{' '}
+        <span className="font-semibold">Book</span> pane holds positions, closes, and orders. Flow graphs
+        stay under Advanced.
       </div>
       {glance?.available && (
         <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
