@@ -80,5 +80,10 @@ async def build_info():
             "hit-quote-freshness-gate",
             "hit-quote-ws-optional",
             "hit-latency-observatory",
+            # G2 Ops-visible amendment (Reviewer CHANGES_REQUIRED follow-up,
+            # strategies-ux-16) — fast/slow HIT path now has an Ops/UI badge,
+            # labeled analyst set, and read-only run controls on the
+            # Strategies HIT ops strip. See docs/WAVE_G_LATENCY_MAX.md.
+            "hit-fast-path-ops-visible",
         ],
     }
