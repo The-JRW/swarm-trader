@@ -556,8 +556,13 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
         if mode == "hit":
             try:
                 from app.backend.services.hit_ops_service import record_hit_run
+                from app.backend.services.hit_service import HIT_SLOW_LLM_ANALYST_IDS
 
                 would_fire_count = action_counts.get("buy", 0) + action_counts.get("short", 0)
+                # G2 Ops-visible amendment — derive fast/slow from the actual
+                # analyst set this run used (never re-guessed from a request
+                # flag that might not match what `_select_analysts` resolved).
+                ran_slow_path = any(a in HIT_SLOW_LLM_ANALYST_IDS for a in analysts)
                 record_hit_run(
                     run_id=run_id,
                     execute_requested=want_execute,
@@ -566,6 +571,8 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
                     trade_results=trade_results,
                     cost_gate_rejects=cost_gate_rejects,
                     prices=hit_gate_prices,
+                    fast=not ran_slow_path,
+                    analyst_ids=list(analysts),
                 )
             except Exception as e:
                 logger.warning("HIT ops persist failed for %s (%s)", run_id, type(e).__name__)

@@ -12,6 +12,21 @@ claims.** Paper-only follow-up to Wave F for **The-JRW/swarm-trader**. Image tag
 `strategies-ux-15`. Feature flags: `hit-fast-path`, `hit-quote-freshness-gate`,
 `hit-quote-ws-optional`, `hit-latency-observatory` (see `GET /build-info`).
 
+> **Reviewer `CHANGES_REQUIRED` follow-up (G2 only, image tag bumped to `strategies-ux-16`,
+> new flag `hit-fast-path-ops-visible`):** G2's `fast` flag was live and correctly wired
+> end-to-end on the backend, but Chrome found **no Ops/UI copy anywhere** for the fast HIT
+> path / "skip heavy LLM" — a backend-only flag isn't reviewable from the UI. See
+> ["G2 Ops-visible amendment"](#g2-ops-visible-amendment-reviewer-changes_required-strategies-ux-16)
+> below for exactly what changed. No execute dual gate, cost gate, trade cap, or HFT claim was
+> touched by this follow-up — it is UI/Ops-copy only, same as everything else in G2.
+>
+> **James t180u add-on (same PR/tag, `strategies-ux-16`, new flag `hit-hundreds-scale`):** HIT
+> analysis/flow must cover **hundreds** of tickers, not the previous ~10-15. See
+> ["James t180u — HIT scale"](#james-t180u--hit-scale-hundreds-of-tickers-not-10-15) below.
+> This raises *how many tickers* a HIT run may consider — it does not touch the execute dual
+> gate, the F2/G3 cost gate, any risk/trade cap, or the "not true HFT / not colocated" claims
+> anywhere in this doc.
+
 ## Read this first: what "as close as this stack allows" actually means
 
 **This is latency-max paper trading over a broker REST/WebSocket API. It is not, and cannot
@@ -79,6 +94,123 @@ cannot mean "run technical_analyst's *node* before apex's *node*" (LangGraph doe
 useful ordering knob there for parallel fan-out/fan-in). It has to mean — and does mean here —
 "don't put an LLM-heavy analyst in the run's analyst set unless asked", which is the only
 lever that actually changes how long a HIT run has to wait before the PM can decide.
+
+#### G2 Ops-visible amendment (Reviewer `CHANGES_REQUIRED`, `strategies-ux-16`)
+
+**Problem:** G2's `fast` flag was correctly wired end-to-end on the backend
+(`resolve_hit_analyst_ids` → `run_hit_pulse` → both HTTP entry points), but there was **no
+Ops/UI copy anywhere** for the fast HIT path or "skip heavy LLM" — a Chrome reviewer could not
+see it without reading the API response directly. Backend-only was insufficient.
+
+**Fix (minimal, paper-only — UI/Ops-copy only, no gate/cap/claim changes):**
+
+- `app/backend/services/hit_ops_service.py`: `record_hit_run(..., fast=None,
+  analyst_ids=None)` now copies both onto the persisted `last_pulse` (`None`/omitted when a
+  caller doesn't pass them — never guessed). `read_hit_ops()` always includes
+  `fast_default` (`true`), `fast_path_analyst_ids` (mirrors `HIT_PRESET_ANALYST_IDS`),
+  `slow_path_analyst_ids` (mirrors `HIT_SLOW_LLM_ANALYST_IDS`), and a `fast_path_note` — so
+  the Ops HIT strip can render "Fast HIT path" copy even before any pulse has run today.
+- `app/backend/services/paper_run_service.py`: `execute_paper_run`'s `mode == "hit"` branch
+  derives `fast` from the run's **actual** resolved analyst set (`ran_slow_path = any(a in
+  HIT_SLOW_LLM_ANALYST_IDS for a in analysts)`) — never re-guessed from a request flag that
+  might not match what `_select_analysts` resolved — and passes `fast`/`analyst_ids` through
+  to `record_hit_run`.
+- `app/frontend/src/components/strategies/hit-ops-panel.tsx` (`HitOpsPanel`, the card James
+  uses in Ops/Book): a header badge — ⚡ **"Fast HIT path"** (default) or 🐢 **"Slow path
+  (opt-in)"** — reflecting the last pulse's actual path (falls back to the server default when
+  no pulse has run yet); a labeled "Fast HIT path — analyst set" block spelling out
+  `technical_analyst + market_regime + autoresearch + sentiment_analyst` for the fast path, or
+  additionally `apex + news_sentiment_analyst` when the slow path ran; and a read-only
+  **Fast (default) / Slow (opt-in)** selector plus a **"Run HIT pulse now (analysis-only)"**
+  button so James can trigger either path directly from Ops/Book. That button always calls
+  `POST /api/automation/hit/pulse` with `execute_trades: false` — it can select the analyst
+  path, but it can never flip `SWARM_HIT_EXECUTE` or set `execute_trades: true`.
+- `app/backend/routes/build_info.py`: new feature flag `hit-fast-path-ops-visible`.
+- Image tag bumped `strategies-ux-15` → `strategies-ux-16` (`docker-compose.yml`).
+
+**Explicitly unchanged by this amendment:** the F2/G3 cost gate, the execute dual gate
+(`SWARM_HIT_EXECUTE` ∧ explicit request), every `hit` risk cap (including the t175u
+`max_trades_per_day` override), and every "not true HFT / not colocated" claim in this doc and
+`docs/WAVE_F_HIT.md` — this amendment adds visibility, not new capability.
+
+#### James t180u — HIT scale (hundreds of tickers, not ~10-15)
+
+**Ask:** HIT analysis and flow must cover **hundreds** of stocks, not the previous ~10-15
+ceiling — while keeping the F2/G3 cost gate, stops, and `allow_leveraged_etfs=False`
+completely untouched, and never claiming co-located HFT.
+
+**What changed (all ceilings/breadth, no risk-rail changes):**
+
+- `scan_market.py`: new `HIT_MAX_TICKERS` (default 300, env
+  `SWARM_HIT_SCAN_MAX_TICKERS`) alongside the unchanged `DEFAULT_MAX_TICKERS` (25, still the
+  CLI/day-swing default). `scan()` scales its raw Alpaca movers/most-actives pulls with
+  `max_tickers` (capped at 100 — an Alpaca-side screener limit, not one this codebase
+  invented), and `get_snapshots()` now auto-chunks into batches of 50 instead of silently
+  truncating to the first 50 symbols — both are prerequisites for a large `max_tickers` to
+  actually survive filtering, not just be requested. **Alpaca's screener may still return
+  fewer names than requested on any given call** — this only raises the ceiling we
+  request/allow, never a guarantee of count.
+- `automation_store.py`: new `HIT_APPLY_RECIPE_MAX` (≥200, default 300, env
+  `SWARM_HIT_APPLY_RECIPE_MAX`) and `apply_recipe_max_for(mode, preset)` — returns the hit
+  ceiling when either is `"hit"`, else the original `APPLY_RECIPE_MAX` (15). The recipe
+  ticker-cap (`_normalize_tickers`/`_normalize_recipe`), the Ops-status scan preview
+  (`_scan_ops_summary`), the scan-history preview (`_append_scan_history`), and the persisted
+  last-scan storage cap (`write_last_scan`) are all now mode/preset-aware through this one
+  helper — swing/day behavior is byte-for-byte unchanged.
+- `swarm_scan_service.py`: `apply_scan_to_recipe`'s `top_n=None` (new default) now resolves to
+  the *full* mode-aware cap instead of a hardcoded 15; an explicit smaller `top_n` is still
+  honored exactly as before. `run_swarm_scan`'s `max_tickers=None` (new default) resolves to
+  `scan_market.HIT_MAX_TICKERS` for hit, `DEFAULT_MAX_TICKERS` otherwise. Passing an explicit
+  `mode="hit"` to `apply_scan_to_recipe` also stamps the saved recipe's own `mode` to `"hit"` —
+  otherwise `write_cron_recipe`'s own normalization would silently re-clamp a hundreds-scale
+  ticker list back down to 20 on the very next read, since that clamp reads the *persisted*
+  recipe's mode/preset, not a transient function argument.
+- `hit_service.py`: `run_hit_pulse`'s ceiling raised from a hardcoded `15` to `HIT_MAX_TICKERS`
+  (default 300, env `SWARM_HIT_MAX_TICKERS`); the *default* request size when `top_n` is
+  omitted stays `DEFAULT_HIT_TICKER_CAP` (10) — unchanged, so an unspecified/cron pulse is
+  exactly as fast as before. Hundreds only happen when a caller (scan-discovered tickers, an
+  explicit list, or an explicit large `top_n`) actually asks for them.
+- **Auto-fast safety rail** (`HIT_AUTO_FAST_TICKER_THRESHOLD`, 30): even an *explicit*
+  `fast=False` (slow-path opt-in) request is overridden back to `fast=True` when the resolved
+  ticker count exceeds 30 — hundreds of tickers must never wait on the LLM-heavy
+  `apex`/`news_sentiment_analyst` pair, which would turn "latency-max paper trading" into an
+  LLM-call meltdown. Small/medium explicit slow-path requests (≤30 tickers) are honored
+  exactly as G2 originally specified. The pulse response reports `fast` (effective),
+  `fast_requested` (the raw ask), and `auto_fast_override` (whether the rail fired) —
+  never silently swapping the analyst set without saying so.
+- `src/config.py`: `MODES["hit"]["universe"]` widened from 11 tickers (9 mega-cap + SPY/QQQ)
+  to 115 — new sector buckets (semis/hardware, software/cloud, financials, healthcare,
+  consumer/retail, industrials, energy, communications/media, growth/momentum) built entirely
+  from well-known, already-liquid, already-listed large-cap US common stocks (never
+  invented/illiquid tickers) so this static fallback is safe to use on its own.
+  `allow_leveraged_etfs` stays `False` — no TQQQ/SOXL/leveraged product anywhere in the
+  widened universe (verified by `tests/test_wave_g_hit_scale.py` against
+  `risk_manager.LEVERAGED_ETFS`/`MOONSHOTS`). This widened list is the **fallback** for when
+  no scan result or explicit ticker list is available; the **primary** way a HIT run reaches
+  "hundreds" is the market scanner or an explicit ticker list, exactly as documented above.
+- `app/backend/models/schemas.py` (`PaperRunRequest`), `app/backend/routes/automation.py`
+  (`CronRecipeBody`, `SwarmScanRequest`, `ApplyScanRequest`, `HitPulseRequest`), and
+  `app/backend/routes/cron.py` (`CronPaperRunRequest`, `CronSwarmScanRequest`,
+  `CronHitPulseRequest`) — every hardcoded `15`/`20`-ticker request-body ceiling that would
+  have blocked a hundreds-scale ask is now either raised to the hit ceiling directly, or
+  gated by a `model_validator` that reads the sibling `mode`/`preset` field: `mode`/`preset`
+  `"hit"` unlocks up to the hit ceiling; every other mode/preset keeps the original,
+  unchanged 15/20-ticker cap (a mis-typed huge list for swing/day still fails fast).
+- **Ops-visible universe/ticker counts** (ties into the G2 Ops-visible amendment above):
+  `GET /api/automation/hit/ops` now always includes `hit_universe_size` (the widened static
+  universe's real size) and `hit_max_tickers` (the request ceiling); `last_pulse` gains
+  `ticker_count`. `HitOpsPanel` renders a `HIT universe: N names` badge and shows the last
+  pulse's actual ticker count next to its fast/slow badge — so a Reviewer/James can see
+  "hundreds" without counting a JSON array by hand. `GET /api/automation/status` gains
+  `apply_cap_effective` (the current recipe's own resolved cap) and `hit_apply_cap`.
+
+**Explicitly unchanged:** the F2/G3 cost gate (still mandatory on every HIT execute attempt),
+the execute dual gate (`SWARM_HIT_EXECUTE` ∧ explicit request, byte-for-byte), every `hit`
+risk cap (`max_position_pct`, `stop_loss_pct`, `max_sector_pct`, `max_open_positions`,
+`min_cash_pct`, `flatten_eod`/`flatten_by`, and the t175u `max_trades_per_day` override),
+`allow_leveraged_etfs: False`, and every "not true HFT / not colocated" claim in this doc and
+`docs/WAVE_F_HIT.md`. This add-on raises *how many tickers* a HIT run may consider — nothing
+about latency claims, execution venue, or risk-per-trade/day.
 
 ### G3 — quote freshness
 
@@ -200,6 +332,9 @@ thing than an order-update stream.
 |-----|---------|-------|
 | `SWARM_HIT_MAX_QUOTE_AGE_MS` | `5000` | G3 — max age (ms) a live quote may be before the cost gate rejects the entry as stale |
 | `SWARM_HIT_QUOTE_WS_ENABLED` | `false` | G3 — enables the optional single-connection, read-only quote WebSocket; REST-only (Wave F behavior) when unset/false |
+| `SWARM_HIT_MAX_TICKERS` | `300` | James t180u — ceiling `hit_service.run_hit_pulse`'s `top_n` may request/allow (was hardcoded 15) |
+| `SWARM_HIT_SCAN_MAX_TICKERS` | `300` | James t180u — ceiling `scan_market.scan()`'s `max_tickers` may request/allow for a HIT-scale scan |
+| `SWARM_HIT_APPLY_RECIPE_MAX` | `300` (floor `200`) | James t180u — ceiling the cron recipe / `apply_scan_to_recipe` may hold when mode/preset is hit (was 15/20) |
 
 No other env var is added or changed by this wave. `SWARM_HIT_EXECUTE`,
 `SWARM_HIT_COST_GATE_BPS`, `SWARM_HIT_TURNOVER_BUDGET_PCT`, `SWARM_MONITOR_DRY_RUN`,
@@ -217,11 +352,30 @@ curl -sS -X POST -H "Content-Type: application/json" -d '{}' \
 curl -sS -X POST -H "Content-Type: application/json" -d '{"fast": false}' \
   https://<host>/api/automation/hit/pulse | jq '.strategy_ids, .fast'
 
+# G2 Ops-visible amendment — fast/slow analyst labels + last pulse's path,
+# always present even before a pulse runs (surfaced in HitOpsPanel)
+curl -sS https://<host>/api/automation/hit/ops | \
+  jq '.fast_default, .fast_path_analyst_ids, .slow_path_analyst_ids, .last_pulse.fast, .last_pulse.analyst_ids'
+
 # G3 — cost-gate response now reports quote_age_ms / max_quote_age_ms on rejects
 curl -sS https://<host>/api/automation/hit/ops | jq '.recent_cost_gate_rejects'
 
 # G4 — decision→submit→ack→fill breakdown on the Ops HIT strip
 curl -sS https://<host>/api/automation/hit/ops | jq '.recent_fill_latencies, .latency_note'
+
+# James t180u — HIT-scale pulse: 250 tickers, still analysis-only
+curl -sS -X POST -H "Content-Type: application/json" -d '{"top_n": 250}' \
+  https://<host>/api/automation/hit/pulse | jq '.ticker_count, .fast, .auto_fast_override'
+
+# James t180u — Ops-visible universe/ticker counts (HitOpsPanel's "HIT
+# universe: N names" badge reads these two fields)
+curl -sS https://<host>/api/automation/hit/ops | jq '.hit_universe_size, .hit_max_tickers'
+
+# James t180u — hit-scale scan + apply (hundreds, not 15)
+curl -sS -X POST -H "Content-Type: application/json" -d '{"mode": "hit"}' \
+  https://<host>/api/automation/swarm-scan | jq '.candidate_count'
+curl -sS -X POST -H "Content-Type: application/json" -d '{"mode": "hit"}' \
+  https://<host>/api/automation/swarm-scan/apply | jq '.cap, .applied_count'
 
 # Build stamp
 curl -sS https://<host>/api/build-info | jq '.image_tag, .features'
@@ -243,10 +397,34 @@ breakdown (`decision_to_submit_ms`/`submit_to_ack_ms`/`ack_to_fill_ms`/`decision
 computed only from present timestamps, `None` otherwise; Wave F's original `latency_ms`
 measure unchanged) and `alpaca_integration`'s `_post_order_with_timing` helper (captures
 `client_submit_at` always, `broker_ack_at` only on success); G5's regression that the
-execute dual gate's truth table is unchanged; and the `strategies-ux-15` build-info flags
+execute dual gate's truth table is unchanged; the `strategies-ux-15` build-info flags
 (`hit-fast-path`, `hit-quote-freshness-gate`, `hit-quote-ws-optional`,
-`hit-latency-observatory`).
+`hit-latency-observatory`); and — G2 Ops-visible amendment — that `read_hit_ops()` always
+includes the fast/slow analyst labels even with no pulse yet today, that `record_hit_run`
+persists `fast`/`analyst_ids` on `last_pulse` (and leaves both `None` when a caller omits
+them — never guessed), that `paper_run_service` derives `fast` from the run's actual resolved
+analyst set (source-level check), that `strategies-ux-16` + `hit-fast-path-ops-visible` are
+present, and that `docker-compose.yml` no longer references the prior tag.
+
+`tests/test_wave_g_hit_scale.py` (James t180u) covers: `scan_market.HIT_MAX_TICKERS` ≥ 250
+and `DEFAULT_MAX_TICKERS` unchanged (25); `scan()`'s raw movers/most-actives pull scaling with
+`max_tickers` and `get_snapshots()`'s chunking (no truncation to 50); `automation_store`'s
+`HIT_APPLY_RECIPE_MAX` ≥ 200 and `apply_recipe_max_for` returning the hit ceiling only for
+mode/preset `"hit"`; that a hit-mode/preset recipe write persists hundreds of tickers while a
+swing/day write still clamps to 20 (unchanged); `apply_scan_to_recipe`'s mode-aware default
+cap (hundreds for hit, 15 unchanged for swing/day) and that `mode="hit"` stamps the saved
+recipe; `run_swarm_scan`'s `max_tickers=None` resolving to `HIT_MAX_TICKERS` for hit vs.
+`DEFAULT_MAX_TICKERS` otherwise; `hit_service.run_hit_pulse`'s raised ceiling (up to
+`HIT_MAX_TICKERS`, default request size unchanged at 10), the `ticker_count` field, and the
+auto-fast override (an explicit `fast=False` with >30 tickers is overridden back to
+`fast=True`, reported via `auto_fast_override`, while ≤30-ticker slow-path requests are
+honored unchanged); the widened `MODES["hit"]` universe (115 tickers, no leveraged-ETF or
+moonshot overlap, `allow_leveraged_etfs` still `False`); the request-model ceilings/validators
+in `schemas.PaperRunRequest`, `routes/automation.py`, and `routes/cron.py` (hit unlocks
+hundreds; every other mode/preset keeps the original 15/20-ticker cap); the new
+`hit-hundreds-scale` build-info flag; and the Ops-visible `hit_universe_size`/`hit_max_tickers`
+fields on `GET /api/automation/hit/ops`.
 
 ```bash
-poetry run pytest tests/test_wave_g_latency_max.py -q
+poetry run pytest tests/test_wave_g_latency_max.py tests/test_wave_g_hit_scale.py -q
 ```

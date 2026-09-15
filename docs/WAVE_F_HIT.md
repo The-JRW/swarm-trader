@@ -9,6 +9,15 @@
 > **not very close** — via a fast analyst path, quote-freshness rejection (+ optional
 > read-only quote WS), and a decision→submit→ack→fill latency observatory. Read that doc's
 > honesty section alongside this one; nothing below about HIT ≠ true HFT changes.
+>
+> **James t180u (same PR/tag as the Wave G follow-up, `strategies-ux-16`):** HIT analysis/flow
+> must cover **hundreds** of tickers, not the ~10-15 this wave originally shipped with —
+> `scan_market`/apply-recipe/hit-pulse ceilings raised, the F1 universe below widened to 115
+> liquid large-cap names, an auto-fast safety rail for large ticker counts, and Ops-visible
+> universe/ticker counts. See
+> [WAVE_G_LATENCY_MAX.md's "James t180u — HIT scale"](./WAVE_G_LATENCY_MAX.md#james-t180u--hit-scale-hundreds-of-tickers-not-10-15)
+> section. Every risk rail this doc documents (F1's caps, F2's mandatory cost gate,
+> `allow_leveraged_etfs: False`) is unchanged — this is a breadth increase, not a risk change.
 
 # Wave F (F1–F6) — HIT: High-frequency Intraday Turnover
 
@@ -78,10 +87,16 @@ TQQQ/SOXL or any other leveraged ETF by default):
 
 ¹ **James override (t175u), supersedes the Reviewer's original 50/day cap — see below.**
 
-Universe: `mega_cap` (NVDA, AVGO, TSM, AMD, MSFT, AAPL, META, GOOGL, AMZN — same liquid names
-as `day`) + `index_anchors` (SPY, QQQ only). No `momentum` or `etf_direction` (leveraged)
-buckets — that is what makes `allow_leveraged_etfs: false` binding: the buckets that would
-carry TQQQ/SOXL simply are not in the HIT universe.
+Universe (original Wave F): `mega_cap` (NVDA, AVGO, TSM, AMD, MSFT, AAPL, META, GOOGL, AMZN —
+same liquid names as `day`) + `index_anchors` (SPY, QQQ only). No `momentum` or
+`etf_direction` (leveraged) buckets — that is what makes `allow_leveraged_etfs: false`
+binding: the buckets that would carry TQQQ/SOXL simply are not in the HIT universe.
+
+**James t180u widened this to 115 tickers** across 9 additional sector buckets (semis/
+hardware, software/cloud, financials, healthcare, consumer/retail, industrials, energy,
+communications/media, growth/momentum) — still no leveraged-ETF/momentum bucket, still only
+well-known already-liquid large-cap US common stocks. See
+[WAVE_G_LATENCY_MAX.md's "James t180u — HIT scale"](./WAVE_G_LATENCY_MAX.md#james-t180u--hit-scale-hundreds-of-tickers-not-10-15).
 
 `hit` is wired everywhere `swing`/`day` already were: `resolve_mode()` / `get_mode_config()`
 (generic, no change needed), the Trading-mode picker + human-override + recipe mode (Strategies

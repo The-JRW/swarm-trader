@@ -107,6 +107,54 @@ def _default_state(today: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
+def _fast_path_info() -> Dict[str, Any]:
+    """G2 Ops-visible amendment — static fast/slow analyst preset labels, so
+    the Ops HIT strip can show "Fast HIT path" copy without a pulse having
+    run yet today. Source of truth stays ``hit_service`` — this is a
+    read-only mirror, never a second definition.
+
+    James t180u — also mirrors the widened static HIT universe size and the
+    request ceiling, so the same strip can show "HIT universe: N names"
+    without a Reviewer/James needing to count a tickers array by hand.
+    """
+    from app.backend.services.hit_service import (
+        HIT_MAX_TICKERS,
+        HIT_PRESET_ANALYST_IDS,
+        HIT_SLOW_LLM_ANALYST_IDS,
+        hit_universe_tickers,
+    )
+
+    try:
+        universe_size = len(hit_universe_tickers(cap=0))
+    except Exception:
+        universe_size = None
+
+    return {
+        "fast_default": True,
+        "fast_path_analyst_ids": list(HIT_PRESET_ANALYST_IDS),
+        "slow_path_analyst_ids": list(HIT_SLOW_LLM_ANALYST_IDS),
+        "fast_path_note": (
+            "Fast HIT path (default): technical_analyst + market_regime + "
+            "autoresearch + sentiment_analyst — skips the heavy per-ticker "
+            "LLM pair below. Slow path (fast=false, opt-in only): adds apex "
+            "+ news_sentiment_analyst (one full LLM call per ticker each). "
+            "See docs/WAVE_G_LATENCY_MAX.md."
+        ),
+        # James t180u — Ops-visible universe breadth. hit_universe_size is
+        # the widened static fallback list (config.py's MODES["hit"]
+        # universe); hit_max_tickers is the ceiling a pulse/apply may
+        # request — both real numbers, never fabricated.
+        "hit_universe_size": universe_size,
+        "hit_max_tickers": HIT_MAX_TICKERS,
+        "hit_scale_note": (
+            "James t180u: HIT analysis/flow targets hundreds of tickers, not "
+            "~10-15. This is a request/allow ceiling, not a guarantee — "
+            "Alpaca's screener may return fewer than requested on a given "
+            "call. See docs/WAVE_G_LATENCY_MAX.md."
+        ),
+    }
+
+
 def _read_or_reset_today() -> Dict[str, Any]:
     """Read persisted state; reset daily counters when the calendar date rolled."""
     raw = _read_json(_hit_ops_path())
@@ -120,8 +168,15 @@ def _read_or_reset_today() -> Dict[str, Any]:
 
 
 def read_hit_ops() -> Dict[str, Any]:
-    """Today's HIT ops strip — trades, turnover, cost-gate rejects, last pulse."""
-    return _read_or_reset_today()
+    """Today's HIT ops strip — trades, turnover, cost-gate rejects, last pulse.
+
+    G2 Ops-visible amendment — always includes the fast/slow analyst preset
+    labels (``_fast_path_info``) alongside the daily counters, so the panel
+    can render "Fast HIT path" copy even before any pulse has run today.
+    """
+    state = _read_or_reset_today()
+    state.update(_fast_path_info())
+    return state
 
 
 def _parse_ts(value: Any) -> Optional[datetime]:
@@ -204,12 +259,19 @@ def record_hit_run(
     trade_results: Optional[List[Dict[str, Any]]] = None,
     cost_gate_rejects: Optional[List[Dict[str, Any]]] = None,
     prices: Optional[Dict[str, float]] = None,
+    fast: Optional[bool] = None,
+    analyst_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Update today's HIT ops counters from one completed HIT paper run.
 
     Called for every ``mode == "hit"`` paper run (cron pulse or Strategies UI
     "Run"), whether or not it actually executed — this keeps "last pulse"
     honest and current even for analysis-only runs.
+
+    G2 Ops-visible amendment — ``fast``/``analyst_ids`` (both optional, from
+    the run's own ``resolve_hit_analyst_ids`` result) are copied through onto
+    ``last_pulse`` so the Ops HIT strip can show which analyst path (fast vs.
+    slow) actually ran, not just whether the run executed trades.
     """
     state = _read_or_reset_today()
     trade_results = trade_results or []
@@ -255,6 +317,11 @@ def record_hit_run(
         "cost_gate_rejects": len(cost_gate_rejects),
         "turnover_added": round(turnover_add, 2),
         "would_fire_count": max(0, int(would_fire_count or 0)),
+        # G2 Ops-visible amendment — None when the caller didn't pass it
+        # (never guessed/inferred here); Strategies UI badge/copy handled
+        # entirely from these two fields plus the static _fast_path_info().
+        "fast": fast if fast is None else bool(fast),
+        "analyst_ids": list(analyst_ids) if analyst_ids else None,
     }
     state["recent_fill_latencies"] = (latencies + list(state.get("recent_fill_latencies") or []))[
         :RECENT_MAX

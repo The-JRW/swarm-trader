@@ -16,6 +16,11 @@ Usage:
   poetry run python scan_market.py --max 20           # Limit to 20 tickers
   poetry run python scan_market.py --min-price 15     # Higher price floor
   poetry run python scan_market.py --no-core          # Skip core watchlist
+  poetry run python scan_market.py --max 300          # HIT-scale scan (James
+                                                       # t180u: hundreds, not
+                                                       # ~10-15 — Alpaca's
+                                                       # screener may still
+                                                       # return fewer)
 
 Pipeline:
   TICKERS=$(poetry run python scan_market.py)
@@ -61,9 +66,23 @@ DEFAULT_MIN_PRICE = 10.0
 DEFAULT_MIN_TRADES = 5000
 DEFAULT_MAX_TICKERS = 25
 
+# James t180u — HIT analysis/flow must be able to cover hundreds of names,
+# not ~10-15. This is a ceiling we *request/allow*, not a guarantee: Alpaca's
+# screener (movers/most-actives) may legitimately return fewer names than
+# asked for on any given call (thin trading day, API-side cap, etc.) — code
+# downstream must tolerate a shorter list, never pad it with invented tickers.
+HIT_MAX_TICKERS = int(os.environ.get("SWARM_HIT_SCAN_MAX_TICKERS", "300"))
+
+# Alpaca's screener endpoints (movers/most-actives) — request more of each
+# raw pool as max_tickers grows, so there is enough breadth to reach a
+# large max_tickers after filtering/dedup. Capped at 100 (that ceiling is
+# itself an Alpaca-side limit on these endpoints, not one we invented).
+_SCREENER_TOP_CAP = 100
+
 
 def get_movers(top: int = 20) -> dict:
     """Get top gainers and losers."""
+    top = max(1, min(int(top), _SCREENER_TOP_CAP))
     try:
         r = requests.get(
             f"{SCREENER_BASE}/stocks/movers",
@@ -80,6 +99,7 @@ def get_movers(top: int = 20) -> dict:
 
 def get_most_active(top: int = 50) -> list[dict]:
     """Get most active stocks by trade count."""
+    top = max(1, min(int(top), _SCREENER_TOP_CAP))
     try:
         r = requests.get(
             f"{SCREENER_BASE}/stocks/most-actives",
@@ -94,22 +114,32 @@ def get_most_active(top: int = 50) -> list[dict]:
         return []
 
 
-def get_snapshots(symbols: list[str]) -> dict:
-    """Get current price snapshots for a list of symbols."""
+def get_snapshots(symbols: list[str], batch_size: int = 50) -> dict:
+    """Get current price snapshots for a list of symbols.
+
+    Auto-chunks into batches of ``batch_size`` (Alpaca's snapshot endpoint
+    caps symbols per request at ~50) so hundreds of discovered symbols each
+    still get a price lookup attempt, instead of only the first 50 — a
+    single un-chunked call would silently starve everything past batch one
+    of a price and drop it from the final ticker list.
+    """
     if not symbols:
         return {}
-    try:
-        r = requests.get(
-            f"{DATA_BASE}/stocks/snapshots",
-            headers=HEADERS,
-            params={"symbols": ",".join(symbols[:50]), "feed": "iex"},
-            timeout=15,
-        )
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"⚠️  Snapshots API failed: {e}", file=sys.stderr)
-        return {}
+    out: dict = {}
+    for i in range(0, len(symbols), max(1, batch_size)):
+        chunk = symbols[i : i + batch_size]
+        try:
+            r = requests.get(
+                f"{DATA_BASE}/stocks/snapshots",
+                headers=HEADERS,
+                params={"symbols": ",".join(chunk), "feed": "iex"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            out.update(r.json())
+        except Exception as e:
+            print(f"⚠️  Snapshots API failed for a batch of {len(chunk)}: {e}", file=sys.stderr)
+    return out
 
 
 def is_tradeable_symbol(symbol: str) -> bool:
@@ -147,8 +177,11 @@ def scan(
     """
     discovered = {}  # symbol -> metadata
 
-    # 1. Pull movers (gainers + losers)
-    movers = get_movers(top=20)
+    # 1. Pull movers (gainers + losers). Scale the raw pull with max_tickers
+    # (up to Alpaca's own screener cap) so a large max_tickers (HIT: hundreds)
+    # actually has enough raw candidates to select from after filtering.
+    movers_top = min(_SCREENER_TOP_CAP, max(20, max_tickers))
+    movers = get_movers(top=movers_top)
 
     for g in movers.get("gainers", []):
         sym = g.get("symbol", "")
@@ -178,8 +211,9 @@ def scan(
                 "change_pct": round(pct, 2),
             }
 
-    # 2. Pull most active by trade count
-    actives = get_most_active(top=50)
+    # 2. Pull most active by trade count (same scaling as movers above)
+    actives_top = min(_SCREENER_TOP_CAP, max(50, max_tickers))
+    actives = get_most_active(top=actives_top)
 
     for a in actives:
         sym = a.get("symbol", "")
@@ -257,12 +291,16 @@ def main():
     parser = argparse.ArgumentParser(
         description="Scan market for today's tradeable opportunities",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Examples:
   python scan_market.py                          # Print comma-separated tickers
   python scan_market.py --json                   # Full JSON output
   python scan_market.py --max 30 --min-price 15  # Custom filters
-  
+  python scan_market.py --max {HIT_MAX_TICKERS}                 # HIT-scale (James t180u):
+                                                  # hundreds of names, not ~10-15.
+                                                  # Alpaca's screener may still return
+                                                  # fewer than requested on a given call.
+
 Pipeline:
   TICKERS=$(poetry run python scan_market.py)
   poetry run python gather_data.py --mode day --tickers $TICKERS --output /tmp/data.json

@@ -101,6 +101,20 @@ MODES = {
     # rebates. This is a higher-turnover sibling of "day" — smaller per-name
     # size, more (but still capped) trades/positions, tighter stop, earlier
     # flatten, higher cash buffer. See docs/WAVE_F_HIT.md. Paper-only.
+    #
+    # James t180u — HIT analysis/flow must cover hundreds of names, not
+    # ~10-15. This static universe is widened (11 -> 100+ tickers) so sector
+    # classification/caps (D3 apply) and the no-scan/no-explicit-tickers
+    # fallback (``hit_service.hit_universe_tickers``) both have real breadth
+    # to draw from. The *primary* way a HIT run actually reaches "hundreds"
+    # is the market scanner (``scan_market.HIT_MAX_TICKERS`` /
+    # ``swarm_scan_service.run_swarm_scan``) or an explicit ticker list —
+    # this list is deliberately built from well-known, liquid, large-cap US
+    # names already trading on major exchanges (never invented/illiquid
+    # tickers) so it is safe as a static fallback on its own. Every name
+    # below is a plain common stock or SPY/QQQ; ``allow_leveraged_etfs``
+    # stays ``False`` — no TQQQ/SOXL/leveraged product anywhere in this
+    # universe. See docs/WAVE_G_LATENCY_MAX.md's G2 Ops-visible amendment.
     "hit": {
         "label": "HIT — Intraday Pulse (paper; not true HFT)",
         "universe": {
@@ -113,10 +127,72 @@ MODES = {
             "index_anchors": {
                 "label": "Index Anchors",
                 # SPY/QQQ only — no TQQQ/SOXL or other leveraged ETFs by default
-                # (Reviewer amendment: allow_leveraged_etfs=False for hit).
+                # (Reviewer amendment: allow_leveraged_etfs=False for hit). Kept
+                # 2nd (right after mega_cap) so a small ``hit_universe_tickers``
+                # cap still reaches SPY/QQQ even before the widened sector
+                # buckets below.
                 "tickers": ["SPY", "QQQ"],
                 "max_sector_pct": 0.30,
                 "max_per_stock_pct": 0.08,
+            },
+            "semis_hardware": {
+                "label": "Semis & Hardware",
+                "tickers": ["MU", "AMAT", "LRCX", "KLAC", "ON", "MRVL", "SNPS", "CDNS", "HPQ", "DELL"],
+                "max_sector_pct": 0.30,
+                "max_per_stock_pct": 0.07,
+            },
+            "software_cloud": {
+                "label": "Software & Cloud",
+                "tickers": ["ORCL", "CRM", "ADBE", "CSCO", "IBM", "QCOM", "TXN", "INTC", "INTU", "NOW"],
+                "max_sector_pct": 0.30,
+                "max_per_stock_pct": 0.07,
+            },
+            "financials": {
+                "label": "Financials",
+                "tickers": ["JPM", "BAC", "WFC", "GS", "MS", "C", "SCHW", "BLK", "AXP", "V", "MA", "PYPL", "USB", "PNC"],
+                "max_sector_pct": 0.30,
+                "max_per_stock_pct": 0.07,
+            },
+            "healthcare": {
+                "label": "Healthcare",
+                "tickers": ["UNH", "JNJ", "LLY", "PFE", "MRK", "ABBV", "TMO", "ABT", "DHR", "BMY", "GILD", "CVS", "MDT", "ISRG"],
+                "max_sector_pct": 0.30,
+                "max_per_stock_pct": 0.07,
+            },
+            "consumer_retail": {
+                "label": "Consumer & Retail",
+                "tickers": ["WMT", "HD", "PG", "KO", "PEP", "MCD", "NKE", "SBUX", "COST", "TGT", "LOW", "DIS", "CL", "KMB"],
+                "max_sector_pct": 0.30,
+                "max_per_stock_pct": 0.07,
+            },
+            "industrials": {
+                "label": "Industrials",
+                "tickers": ["CAT", "BA", "GE", "HON", "UPS", "LMT", "RTX", "DE", "MMM", "FDX", "EMR", "ETN", "GD", "NOC"],
+                "max_sector_pct": 0.30,
+                "max_per_stock_pct": 0.07,
+            },
+            "energy": {
+                "label": "Energy",
+                "tickers": ["XOM", "CVX", "COP", "SLB", "EOG", "PSX", "MPC", "VLO", "OXY", "HES"],
+                "max_sector_pct": 0.30,
+                "max_per_stock_pct": 0.07,
+            },
+            "communications_media": {
+                "label": "Communications & Media",
+                "tickers": ["NFLX", "CMCSA", "TMUS", "VZ", "T", "CHTR", "WBD", "PARA"],
+                "max_sector_pct": 0.30,
+                "max_per_stock_pct": 0.07,
+            },
+            "growth_momentum": {
+                "label": "Growth / Momentum",
+                # Same higher-vol tactical-style names as swing/day's own
+                # growth/momentum buckets (not new risk exposure, just also
+                # reachable from HIT). Still subject to allow_leveraged_etfs
+                # (irrelevant here — none of these are leveraged products)
+                # and every position/sector/stop cap below.
+                "tickers": ["PLTR", "COIN", "MSTR", "RKLB", "SMCI", "SNOW", "NET", "PANW", "CRWD", "DDOG"],
+                "max_sector_pct": 0.20,
+                "max_per_stock_pct": 0.05,
             },
         },
         "risk": {

@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Set
 
 from app.backend.services.automation_store import (
     APPLY_RECIPE_MAX,
+    HIT_APPLY_RECIPE_MAX,
+    apply_recipe_max_for,
     auto_launch_env_allows,
     read_cron_recipe,
     read_last_scan,
@@ -184,7 +186,7 @@ def run_swarm_scan(
     *,
     mode: Optional[str] = None,
     intersect_universe: bool = True,
-    max_tickers: int = 25,
+    max_tickers: Optional[int] = None,
     include_core: bool = True,
     min_price: float = 10.0,
     min_trades: int = 5000,
@@ -193,7 +195,14 @@ def run_swarm_scan(
     """Run market scan, tag candidates, optional mode-universe intersect, persist.
 
     Default ``intersect_universe=True`` (amendment: ON for swing/day).
+
+    James t180u — ``max_tickers=None`` (the default) now resolves to
+    ``scan_market.HIT_MAX_TICKERS`` (hundreds) when the resolved mode is
+    ``hit``, or ``scan_market.DEFAULT_MAX_TICKERS`` (25, unchanged)
+    otherwise. Callers may still pass an explicit ``max_tickers`` to
+    override either default.
     """
+    from scan_market import DEFAULT_MAX_TICKERS, HIT_MAX_TICKERS
     from scan_market import scan as market_scan
 
     recipe = read_cron_recipe()
@@ -201,6 +210,9 @@ def run_swarm_scan(
     if resolved_mode not in ("swing", "day", "hit", "auto"):
         resolved_mode = "swing"
     intersect_mode = "swing" if resolved_mode == "auto" else resolved_mode
+
+    if max_tickers is None:
+        max_tickers = HIT_MAX_TICKERS if intersect_mode == "hit" else DEFAULT_MAX_TICKERS
 
     raw = market_scan(
         min_price=min_price,
@@ -450,25 +462,34 @@ def select_sector_aware(
 
 def apply_scan_to_recipe(
     *,
-    top_n: int = APPLY_RECIPE_MAX,
+    top_n: Optional[int] = None,
     tickers: Optional[List[str]] = None,
     candidates: Optional[List[Dict[str, Any]]] = None,
     sector_aware: bool = True,
     mode: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """C2 + D3 — apply top N (≤15) candidates to cron_recipe, sector-aware.
+    """C2 + D3 — apply top N candidates to cron_recipe, sector-aware.
 
     Sector-aware ordering prefers underweight sectors, then fills the remaining
     slots. The recipe is never left empty: if sector selection yields nothing we
     fall back to plain scan order and say so in ``notes``.
+
+    James t180u — the apply cap is mode-aware: ``mode`` (or preset "hit" via
+    the current recipe) raises the ceiling to ``HIT_APPLY_RECIPE_MAX``
+    (hundreds); every other mode keeps the original ``APPLY_RECIPE_MAX``
+    (15) unchanged. ``top_n=None`` (the default) uses the full resolved cap;
+    an explicit smaller ``top_n`` is still honored.
     """
-    n = max(1, min(int(top_n or APPLY_RECIPE_MAX), APPLY_RECIPE_MAX))
     pool = _candidate_pool(tickers=tickers, candidates=candidates)
     if not pool:
         raise ValueError("No candidates to apply — run a scan first")
 
     current = read_cron_recipe()
-    policy = _sector_policy(mode or current.get("mode"))
+    resolved_mode = (mode or current.get("mode") or "swing").strip().lower()
+    apply_max = apply_recipe_max_for(resolved_mode, current.get("preset"))
+    n = max(1, min(int(top_n or apply_max), apply_max))
+
+    policy = _sector_policy(resolved_mode)
     notes: List[str] = []
     skipped: List[Dict[str, Any]] = []
     sectors: List[Dict[str, Any]] = []
@@ -501,7 +522,7 @@ def apply_scan_to_recipe(
                 "sector": policy["ticker_sector"].get(c["symbol"], OTHER_SECTOR),
                 "sector_label": "",
                 "kind": "slot_cap",
-                "reason": f"apply cap reached — {n} of {APPLY_RECIPE_MAX} tickers filled",
+                "reason": f"apply cap reached — {n} of {apply_max} tickers filled",
             }
             for c in pool[n:]
         ]
@@ -511,12 +532,22 @@ def apply_scan_to_recipe(
                 "so the recipe is never left empty."
             )
 
-    chosen = [c["symbol"] for c in applied_candidates][:APPLY_RECIPE_MAX]
+    chosen = [c["symbol"] for c in applied_candidates][:apply_max]
     applied_candidates = applied_candidates[: len(chosen)]
     if not chosen:
         raise ValueError("No candidates to apply — run a scan first")
 
-    saved = write_cron_recipe({**current, "tickers": chosen})
+    # James t180u — only stamp the recipe's own mode when the caller
+    # explicitly asked for one (e.g. mode="hit"): write_cron_recipe's own
+    # normalization caps tickers by the *persisted* recipe mode/preset, so a
+    # hundreds-scale hit apply must actually persist mode="hit" or it would
+    # be silently re-clamped back down to 20 on the next read. When mode is
+    # omitted, behavior is unchanged — the current recipe's mode is kept
+    # exactly as before (mode here was sector-policy-only).
+    recipe_patch: Dict[str, Any] = {**current, "tickers": chosen}
+    if mode is not None:
+        recipe_patch["mode"] = resolved_mode
+    saved = write_cron_recipe(recipe_patch)
     if not saved.get("tickers"):
         raise ValueError("Recipe write produced an empty ticker list — refusing empty CORE")
 
@@ -524,7 +555,7 @@ def apply_scan_to_recipe(
         "recipe": saved,
         "applied_tickers": chosen,
         "applied_count": len(chosen),
-        "cap": APPLY_RECIPE_MAX,
+        "cap": apply_max,
         "candidates": applied_candidates,
         "sector_aware": bool(sector_aware),
         "sector_mode": policy["mode"],

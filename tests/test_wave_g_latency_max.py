@@ -138,6 +138,113 @@ def test_cron_and_automation_routes_pass_fast_to_run_hit_pulse():
     assert "fast=bool(body.fast)" in inspect.getsource(automation_routes.automation_hit_pulse)
 
 
+# ── G2 Ops-visible amendment (Reviewer CHANGES_REQUIRED follow-up) ─────────
+# Backend-only `fast` flag was live but had no Ops/UI copy; these tests back
+# the fields the Strategies UI's HitOpsPanel now renders (badge + labeled
+# analyst set + read-only run controls), so a Chrome reviewer can see "Fast
+# HIT path" without digging into the API.
+
+
+def test_read_hit_ops_always_includes_fast_path_labels_even_with_no_pulse_yet(
+    monkeypatch, tmp_path
+):
+    _isolate_automation(monkeypatch, tmp_path)
+    from app.backend.services.hit_ops_service import read_hit_ops
+    from app.backend.services.hit_service import (
+        HIT_PRESET_ANALYST_IDS,
+        HIT_SLOW_LLM_ANALYST_IDS,
+    )
+
+    ops = read_hit_ops()
+    assert ops["last_pulse"] is None
+    assert ops["fast_default"] is True
+    assert ops["fast_path_analyst_ids"] == list(HIT_PRESET_ANALYST_IDS)
+    assert ops["slow_path_analyst_ids"] == list(HIT_SLOW_LLM_ANALYST_IDS)
+    assert "Fast HIT path" in ops["fast_path_note"]
+    assert "apex" in ops["fast_path_note"] or "apex" in " ".join(ops["slow_path_analyst_ids"])
+
+
+def test_record_hit_run_persists_fast_and_analyst_ids_on_last_pulse(monkeypatch, tmp_path):
+    _isolate_automation(monkeypatch, tmp_path)
+    from app.backend.services.hit_ops_service import read_hit_ops, record_hit_run
+
+    record_hit_run(
+        run_id="run-fast",
+        execute_requested=False,
+        execute_effective=False,
+        trade_results=[],
+        cost_gate_rejects=[],
+        prices={},
+        fast=True,
+        analyst_ids=["technical_analyst", "market_regime", "autoresearch", "sentiment_analyst"],
+    )
+    fast_state = read_hit_ops()
+    assert fast_state["last_pulse"]["fast"] is True
+    assert fast_state["last_pulse"]["analyst_ids"] == [
+        "technical_analyst",
+        "market_regime",
+        "autoresearch",
+        "sentiment_analyst",
+    ]
+
+    record_hit_run(
+        run_id="run-slow",
+        execute_requested=False,
+        execute_effective=False,
+        trade_results=[],
+        cost_gate_rejects=[],
+        prices={},
+        fast=False,
+        analyst_ids=[
+            "technical_analyst",
+            "market_regime",
+            "autoresearch",
+            "sentiment_analyst",
+            "apex",
+            "news_sentiment_analyst",
+        ],
+    )
+    slow_state = read_hit_ops()
+    assert slow_state["last_pulse"]["fast"] is False
+    assert "apex" in slow_state["last_pulse"]["analyst_ids"]
+    assert "news_sentiment_analyst" in slow_state["last_pulse"]["analyst_ids"]
+
+
+def test_record_hit_run_leaves_fast_and_analyst_ids_none_when_omitted(monkeypatch, tmp_path):
+    """Backward compatibility — callers (or older records) that don't pass
+    fast/analyst_ids at all must not have either field guessed/fabricated."""
+    _isolate_automation(monkeypatch, tmp_path)
+    from app.backend.services.hit_ops_service import read_hit_ops, record_hit_run
+
+    record_hit_run(
+        run_id="run-legacy",
+        execute_requested=False,
+        execute_effective=False,
+        trade_results=[],
+        cost_gate_rejects=[],
+        prices={},
+    )
+    state = read_hit_ops()
+    assert state["last_pulse"]["fast"] is None
+    assert state["last_pulse"]["analyst_ids"] is None
+
+
+def test_paper_run_service_derives_fast_from_actual_analyst_set_and_records_it():
+    """Source-level check: paper_run_service must derive `fast` from the run's
+    *actual* resolved analyst set (never re-guessed from a request flag that
+    might not match what `_select_analysts` resolved), and must pass both
+    `fast` and `analyst_ids` through to `record_hit_run`."""
+    import inspect
+
+    from app.backend.services import paper_run_service
+
+    src = inspect.getsource(paper_run_service.execute_paper_run)
+    assert "HIT_SLOW_LLM_ANALYST_IDS" in src
+    assert "ran_slow_path" in src
+    assert "fast=not ran_slow_path" in src
+    assert "analyst_ids=list(analysts)" in src
+
+
 # ── G3 — quote freshness (cost gate) ────────────────────────────────────────
 
 
@@ -663,6 +770,7 @@ def test_build_info_has_wave_g_flags():
         "hit-quote-freshness-gate",
         "hit-quote-ws-optional",
         "hit-latency-observatory",
+        "hit-fast-path-ops-visible",
     ):
         assert flag in src
 
@@ -675,6 +783,22 @@ def test_wave_g_doc_states_not_colocated_hft_and_references_ux15():
     assert "SWARM_HIT_MAX_QUOTE_AGE_MS" in doc
     assert "SWARM_HIT_QUOTE_WS_ENABLED" in doc
     assert "single-connection" in doc.lower()
+
+
+def test_wave_g_doc_documents_g2_ops_visible_amendment_and_ux16():
+    """Reviewer CHANGES_REQUIRED follow-up — G2's fast/slow path must be
+    documented as Ops-visible (not just an API field), and the doc must
+    reference the bumped image tag."""
+    doc = (ROOT / "docs/WAVE_G_LATENCY_MAX.md").read_text(encoding="utf-8")
+    assert "strategies-ux-16" in doc
+    assert "Ops-visible" in doc
+    assert "HitOpsPanel" in doc
+
+
+def test_docker_compose_image_tag_bumped_to_ux16():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "strategies-ux-16" in compose
+    assert "strategies-ux-15" not in compose
 
 
 def test_wave_f_doc_cross_links_wave_g():

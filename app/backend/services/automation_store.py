@@ -24,6 +24,10 @@ LAST_DIGEST_FILE = "last_conviction_digest.json"
 LAST_SCAN_FILE = "last_scan.json"
 SCAN_HISTORY_FILE = "scan_history.jsonl"
 APPLY_RECIPE_MAX = 15
+# James t180u — HIT's recipe/apply path must hold hundreds of names, not
+# swing/day's 15. Minimum 200 enforced even if the env var is set lower by
+# mistake — "≥200" was the explicit ask.
+HIT_APPLY_RECIPE_MAX = max(200, int(os.environ.get("SWARM_HIT_APPLY_RECIPE_MAX", "300")))
 SCAN_HISTORY_MAX = 20
 
 VALID_PRESETS = ("core", "value", "growth", "quant", "hit", "custom")
@@ -35,6 +39,17 @@ DEFAULT_RECIPE: Dict[str, Any] = {
     "mode": "swing",
     "execute_trades": False,
 }
+
+
+def apply_recipe_max_for(mode: Optional[str] = None, preset: Optional[str] = None) -> int:
+    """James t180u — recipe/apply ticker ceiling. HIT (by mode or preset)
+    gets ``HIT_APPLY_RECIPE_MAX`` (hundreds); every other mode/preset keeps
+    the original ``APPLY_RECIPE_MAX`` (15) unchanged."""
+    m = (mode or "").strip().lower()
+    p = (preset or "").strip().lower()
+    if m == "hit" or p == "hit":
+        return HIT_APPLY_RECIPE_MAX
+    return APPLY_RECIPE_MAX
 
 
 def _ensure_dir() -> Path:
@@ -67,12 +82,15 @@ def _read_json(path: Path) -> Optional[Dict[str, Any]]:
 def _scan_ops_summary(scan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not scan:
         return None
+    # James t180u — the Ops preview list is mode-aware (hundreds for hit);
+    # candidate_count itself was never truncated (see write_last_scan).
+    preview_max = apply_recipe_max_for(scan.get("mode"))
     return {
         "updated_at": scan.get("updated_at") or scan.get("timestamp"),
         "mode": scan.get("mode"),
         "intersect_universe": scan.get("intersect_universe"),
         "candidate_count": scan.get("candidate_count") or len(scan.get("candidates") or []),
-        "tickers": (scan.get("tickers") or [])[:APPLY_RECIPE_MAX],
+        "tickers": (scan.get("tickers") or [])[:preview_max],
         "paper_only": True,
     }
 
@@ -88,7 +106,7 @@ def resolve_cron_execute_trades(recipe_or_body_flag: bool) -> bool:
     return bool(recipe_or_body_flag) and cron_execute_env_allows()
 
 
-def _normalize_tickers(tickers: Any) -> List[str]:
+def _normalize_tickers(tickers: Any, max_len: int = 20) -> List[str]:
     if not isinstance(tickers, list):
         return list(DEFAULT_RECIPE["tickers"])
     cleaned: List[str] = []
@@ -100,7 +118,7 @@ def _normalize_tickers(tickers: Any) -> List[str]:
             continue
         if sym not in cleaned:
             cleaned.append(sym)
-        if len(cleaned) >= 20:
+        if len(cleaned) >= max_len:
             break
     return cleaned or list(DEFAULT_RECIPE["tickers"])
 
@@ -113,8 +131,13 @@ def _normalize_recipe(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     mode = str(raw.get("mode") or "swing").strip().lower()
     if mode not in VALID_MODES:
         mode = "swing"
+    # James t180u — mode=="hit" or preset=="hit" gets a hundreds-scale ticker
+    # cap; every other mode/preset keeps the original 20-ticker recipe cap
+    # (deliberately not APPLY_RECIPE_MAX (15) — that constant is scoped to
+    # the swarm-scan "apply top N" endpoint, a different, tighter cap).
+    max_len = HIT_APPLY_RECIPE_MAX if (mode == "hit" or preset == "hit") else 20
     return {
-        "tickers": _normalize_tickers(raw.get("tickers")),
+        "tickers": _normalize_tickers(raw.get("tickers"), max_len=max_len),
         "preset": preset,
         "mode": mode,
         "execute_trades": bool(raw.get("execute_trades")),
@@ -342,13 +365,18 @@ def write_last_scan(summary: Dict[str, Any]) -> Path:
         **clean,
         "paper_only": True,
     }
-    # Cap candidate list size in persisted file
+    # Cap candidate list size in persisted file. James t180u — hit-mode
+    # scans persist up to HIT_APPLY_RECIPE_MAX (hundreds); every other mode
+    # keeps the original 50-item storage cap. candidate_count/ticker_count
+    # (see run_swarm_scan) are computed before this truncation and are
+    # never reduced by it.
+    storage_cap = max(50, apply_recipe_max_for(payload.get("mode")))
     cands = payload.get("candidates")
-    if isinstance(cands, list) and len(cands) > 50:
-        payload["candidates"] = cands[:50]
+    if isinstance(cands, list) and len(cands) > storage_cap:
+        payload["candidates"] = cands[:storage_cap]
     tickers = payload.get("tickers")
-    if isinstance(tickers, list) and len(tickers) > 50:
-        payload["tickers"] = tickers[:50]
+    if isinstance(tickers, list) and len(tickers) > storage_cap:
+        payload["tickers"] = tickers[:storage_cap]
     _atomic_write(path, payload)
     _append_scan_history(payload)
     _refresh_ops_status()
@@ -360,8 +388,13 @@ def read_last_scan() -> Optional[Dict[str, Any]]:
 
 
 def _append_scan_history(entry: Dict[str, Any]) -> None:
-    """Append one scan summary line; keep last SCAN_HISTORY_MAX (C5)."""
+    """Append one scan summary line; keep last SCAN_HISTORY_MAX (C5).
+
+    James t180u — the preview list length is mode-aware (hundreds for hit);
+    candidate_count is never truncated regardless of mode.
+    """
     hist_path = _ensure_dir() / SCAN_HISTORY_FILE
+    preview_max = apply_recipe_max_for(entry.get("mode"))
     line_obj = {
         "updated_at": entry.get("updated_at") or _now_iso(),
         "timestamp": entry.get("timestamp"),
@@ -369,13 +402,13 @@ def _append_scan_history(entry: Dict[str, Any]) -> None:
         "intersect_universe": entry.get("intersect_universe"),
         "candidate_count": entry.get("candidate_count")
         or len(entry.get("candidates") or []),
-        "tickers": (entry.get("tickers") or [])[:APPLY_RECIPE_MAX],
+        "tickers": (entry.get("tickers") or [])[:preview_max],
         "candidates_preview": [
             {
                 "symbol": c.get("symbol"),
                 "sources": c.get("sources"),
             }
-            for c in (entry.get("candidates") or [])[:APPLY_RECIPE_MAX]
+            for c in (entry.get("candidates") or [])[:preview_max]
             if isinstance(c, dict)
         ],
         "paper_only": True,
