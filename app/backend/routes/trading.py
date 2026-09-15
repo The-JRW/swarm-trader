@@ -17,6 +17,8 @@ def _mode_payload() -> TradingModeResponse:
     import json
     from pathlib import Path
 
+    from app.backend.services.mode_resolver_service import read_last_mode_resolution
+
     resolved = resolve_mode()
     display_resolved = resolved if resolved != "auto" else "swing"
 
@@ -28,9 +30,16 @@ def _mode_payload() -> TradingModeResponse:
         except (json.JSONDecodeError, OSError):
             mf = {}
 
+    # E4 — surface the last persisted VIX/gap/calendar auto-resolution (cheap
+    # cache read, no network call here). Human override always wins; the
+    # resolver itself checks for an active override before computing.
+    auto_resolution = read_last_mode_resolution()
+    if auto_resolution and auto_resolution.get("resolved_mode"):
+        display_resolved = auto_resolution["resolved_mode"]
+
     return TradingModeResponse(
         mode=mf.get("mode") or resolved,
-        resolved_mode=display_resolved if resolved != "auto" else "swing",
+        resolved_mode=display_resolved,
         override=mf.get("override"),
         override_until=mf.get("override_until"),
         last_mode_used=mf.get("last_mode_used"),
@@ -39,6 +48,7 @@ def _mode_payload() -> TradingModeResponse:
         updated_by=mf.get("updated_by"),
         alpaca_trading_mode=alpaca_trading_mode(),
         paper_only=True,
+        auto_resolution=auto_resolution,
     )
 
 
@@ -72,6 +82,16 @@ async def set_trading_mode(body: TradingModeSetRequest):
             override=body.override,
             override_hours=body.override_hours,
         )
+        try:
+            # E4 — recompute immediately so the UI shows a fresh reason instead
+            # of a stale/no resolution after a human changes mode/override.
+            from app.backend.services.mode_resolver_service import (
+                compute_and_persist_mode_resolution,
+            )
+
+            compute_and_persist_mode_resolution(force=True)
+        except Exception:
+            pass
         return _mode_payload()
     except HTTPException:
         raise

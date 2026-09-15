@@ -320,6 +320,9 @@ class TradingModeResponse(BaseModel):
     updated_by: Optional[str] = None
     alpaca_trading_mode: str = "paper"
     paper_only: bool = True
+    # E4 — mode auto-resolver lite: last persisted VIX/gap/calendar resolution
+    # when mode=auto (never overwritten by a human override — override wins).
+    auto_resolution: Optional[Dict[str, Any]] = None
 
 
 class TradingModeSetRequest(BaseModel):

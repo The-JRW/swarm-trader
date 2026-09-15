@@ -304,9 +304,21 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
         from src.main import run_hedge_fund
 
         mode = rec.get("mode") or resolve_mode()
+        mode_auto_resolution = None
         if mode == "auto":
-            # Keep analysis path deterministic for UI; agent auto-pick is CLI/cron
-            mode = "swing"
+            # E4 — resolve via documented VIX/gap/calendar rules; persist the
+            # reason so Strategies can show it. Human override always wins
+            # (compute_and_persist_mode_resolution checks that first).
+            try:
+                from app.backend.services.mode_resolver_service import (
+                    compute_and_persist_mode_resolution,
+                )
+
+                mode_auto_resolution = compute_and_persist_mode_resolution()
+                mode = mode_auto_resolution.get("resolved_mode") or "swing"
+            except Exception as e:
+                logger.warning("Mode auto-resolution failed (%s); defaulting swing", type(e).__name__)
+                mode = "swing"
         get_mode_config(mode)  # validate
 
         tickers = rec["tickers"]
@@ -447,7 +459,16 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
             "execute_blocked_reason": execute_blocked_reason,
             "trade_results": trade_results,
             "conviction_digest": conviction_digest,
+            "mode_auto_resolution": mode_auto_resolution,
         }
+
+        # E3 — durable session digest from real run fields only (no invented scores)
+        try:
+            from app.backend.services.session_digest_service import write_session_digest
+
+            write_session_digest(run_id=run_id, record=rec, summary=summary)
+        except Exception as e:
+            logger.warning("Session digest persist failed for %s (%s)", run_id, type(e).__name__)
 
         _update_run(
             run_id,

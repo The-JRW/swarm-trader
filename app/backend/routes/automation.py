@@ -21,9 +21,25 @@ from app.backend.services.automation_store import (
     read_scan_history,
     write_cron_recipe,
 )
+from app.backend.services.autoresearch_review_service import (
+    get_review_queue,
+    read_recent_runs as read_recent_autoresearch_runs,
+    record_review_decision,
+)
 from app.backend.services.conviction_digest import build_recipe_hints
+from app.backend.services.dry_run_streak_service import (
+    clear_ack as clear_dry_run_ack,
+    read_dry_run_streak,
+    record_ack as record_dry_run_ack,
+)
+from app.backend.services.mode_resolver_service import (
+    compute_and_persist_mode_resolution,
+    read_last_mode_resolution,
+)
 from app.backend.services.portfolio_monitor_service import monitor_dry_run_env_default
+from app.backend.services.redeploy_assist_service import get_redeploy_suggestion
 from app.backend.services.risk_policy_service import get_risk_policy
+from app.backend.services.session_digest_service import read_session_digests
 from app.backend.services.swarm_scan_service import (
     apply_scan_to_recipe,
     get_last_scan_payload,
@@ -296,3 +312,150 @@ async def automation_recipe_hints():
         "current_recipe_tickers": recipe.get("tickers") or [],
         "paper_only": True,
     }
+
+
+# ── E1 — A2 dry-run streak / exit checklist ─────────────────────────────────
+
+
+class DryRunAckRequest(BaseModel):
+    by: Optional[str] = Field(default=None, description="Who is acking (James / Reviewer)")
+    note: Optional[str] = Field(default=None, description="Optional context for the ack")
+
+
+@router.get("/automation/dry-run-streak")
+async def automation_dry_run_streak():
+    """E1 — Weekday dry-run streak + last would-fire summaries.
+
+    Display/record only: there is no field here (or write path) that flips
+    ``SWARM_MONITOR_DRY_RUN``. That stays an Elestio-console-only decision.
+    """
+    return read_dry_run_streak()
+
+
+@router.post("/automation/dry-run-streak/ack")
+async def automation_dry_run_streak_ack(body: Optional[DryRunAckRequest] = None):
+    """E1 — Record a James/Reviewer ack. Never touches SWARM_MONITOR_DRY_RUN."""
+    body = body or DryRunAckRequest()
+    return record_dry_run_ack(body.by, body.note)
+
+
+@router.post("/automation/dry-run-streak/clear-ack")
+async def automation_dry_run_streak_clear_ack():
+    """E1 — Clear a previously recorded ack (record only)."""
+    return clear_dry_run_ack()
+
+
+# ── E3 — Session digest center ──────────────────────────────────────────────
+
+
+@router.get("/automation/session-digests")
+async def automation_session_digests(limit: int = 10):
+    """E3 — Durable digests built from real run fields only, newest first."""
+    limit = max(1, min(int(limit or 10), 20))
+    return {
+        "paper_only": True,
+        "limit": limit,
+        "digests": read_session_digests(limit=limit),
+        "note": (
+            "Built from real run fields only (action_counts, decisions, conviction "
+            "digest, trade_results filled/blocked) — no invented scores."
+        ),
+    }
+
+
+# ── E4 — Mode auto-resolver lite ────────────────────────────────────────────
+
+
+@router.get("/automation/mode-resolution")
+async def automation_mode_resolution():
+    """E4 — Last persisted auto-resolution (cheap; no network fetch)."""
+    cached = read_last_mode_resolution()
+    if cached:
+        return cached
+    try:
+        return compute_and_persist_mode_resolution()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Mode resolution unavailable ({type(e).__name__})"
+        ) from e
+
+
+@router.post("/automation/mode-resolution/refresh")
+async def automation_mode_resolution_refresh():
+    """E4 — Force a fresh VIX/gap/calendar resolution. Human override still wins."""
+    try:
+        return compute_and_persist_mode_resolution(force=True)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Mode resolution failed ({type(e).__name__})"
+        ) from e
+
+
+# ── E5 — Empty-book redeploy assist ─────────────────────────────────────────
+
+
+@router.get("/automation/redeploy-suggestion")
+async def automation_redeploy_suggestion():
+    """E5 — Suggest Scan → Apply → Launch analysis when the book is empty and
+    cash sits above a sensible threshold. Display-only; execute stays
+    dual-gated off by default regardless of this suggestion.
+    """
+    return get_redeploy_suggestion()
+
+
+# ── E6 — AutoResearch review queue (stub) ───────────────────────────────────
+
+
+class AutoResearchReviewRequest(BaseModel):
+    experiment_id: str = Field(..., description="experiment_id from the review queue")
+    decision: str = Field(..., description="approved | rejected | pending (pending clears it)")
+    by: Optional[str] = Field(default=None, description="Who is reviewing")
+    note: Optional[str] = Field(default=None, description="Optional context for the decision")
+
+
+@router.get("/automation/autoresearch/queue")
+async def automation_autoresearch_queue(limit: int = 20):
+    """E6 — Recent fitness/experiments from autoresearch/experiments/*.jsonl.
+
+    Read-only view over the existing offline evolution loop's own logs.
+    Approve/reject decisions recorded via the POST endpoint below are
+    display/UX-only annotations — they never write strategy.py or any
+    production config, and never trigger evolve.py.
+    """
+    limit = max(1, min(int(limit or 20), 100))
+    try:
+        return get_review_queue(limit=limit)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"AutoResearch queue unavailable ({type(e).__name__})"
+        ) from e
+
+
+@router.get("/automation/autoresearch/runs")
+async def automation_autoresearch_runs(limit: int = 10):
+    """E6 — Recent evolution run summaries from autoresearch/experiments/runs.jsonl."""
+    limit = max(1, min(int(limit or 10), 50))
+    try:
+        return {"paper_only": True, "read_only_source": True, "runs": read_recent_autoresearch_runs(limit=limit)}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"AutoResearch runs unavailable ({type(e).__name__})"
+        ) from e
+
+
+@router.post("/automation/autoresearch/review")
+async def automation_autoresearch_review(body: AutoResearchReviewRequest):
+    """E6 — Record a display/UX-only approve/reject annotation.
+
+    Never applies anything to production config: no write to
+    ``autoresearch/strategy.py``, ``trading_mode.json``, ``cron_recipe.json``,
+    or any other file this app treats as config, and no evolve.py trigger.
+    """
+    try:
+        return record_review_decision(body.experiment_id, body.decision, body.by, body.note)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Review decision failed ({type(e).__name__})"
+        ) from e

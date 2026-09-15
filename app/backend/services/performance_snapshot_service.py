@@ -61,6 +61,34 @@ def load_snapshots(days: Optional[int] = None) -> List[Dict[str, Any]]:
     return snapshots
 
 
+def list_recent_snapshots(limit: int = 30) -> List[Dict[str, Any]]:
+    """E2 — sanitized recent snapshots for the perf strip's Details drawer.
+
+    Newest first, capped at ``limit``. Every field here already comes from a
+    real snapshot write (equity/cash from Alpaca, SPY/QQQ from yfinance when
+    available) — never fabricated.
+    """
+    snaps = load_snapshots()
+    snaps_sorted = sorted(snaps, key=lambda s: (s.get("date") or "", s.get("timestamp") or ""))
+    limit = max(1, min(int(limit or 30), 90))
+    out = list(reversed(snaps_sorted))[:limit]
+    return [
+        {
+            "date": s.get("date"),
+            "timestamp": s.get("timestamp"),
+            "equity": s.get("equity"),
+            "cash": s.get("cash"),
+            "position_count": s.get("position_count"),
+            "daily_pnl": s.get("daily_pnl"),
+            "daily_pnl_pct": s.get("daily_pnl_pct"),
+            "spy_price": s.get("spy_price"),
+            "spy_daily_pct": s.get("spy_daily_pct"),
+            "alpha_vs_spy_daily": s.get("alpha_vs_spy_daily"),
+        }
+        for s in out
+    ]
+
+
 def read_latest_snapshot() -> Optional[Dict[str, Any]]:
     latest = _ensure_dir() / "latest.json"
     try:

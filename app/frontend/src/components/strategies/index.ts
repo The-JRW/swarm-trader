@@ -4,3 +4,7 @@ export { BookRecords } from './book-records';
 export { PortfolioBook } from './portfolio-book';
 export { RecipeHintsPanel } from './recipe-hints-panel';
 export { RiskPolicyPanel } from './risk-policy-panel';
+export { DryRunStreakPanel } from './dry-run-streak-panel';
+export { SessionDigestPanel } from './session-digest-panel';
+export { RedeployBanner } from './redeploy-banner';
+export { AutoResearchReviewPanel } from './autoresearch-review-panel';

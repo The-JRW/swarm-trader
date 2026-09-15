@@ -18,11 +18,15 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { AutoResearchReviewPanel } from '@/components/strategies/autoresearch-review-panel';
 import { BookRecords } from '@/components/strategies/book-records';
+import { DryRunStreakPanel } from '@/components/strategies/dry-run-streak-panel';
 import { actionTone } from '@/components/strategies/format';
 import { PortfolioBook } from '@/components/strategies/portfolio-book';
 import { RecipeHintsPanel } from '@/components/strategies/recipe-hints-panel';
+import { RedeployBanner } from '@/components/strategies/redeploy-banner';
 import { RiskPolicyPanel } from '@/components/strategies/risk-policy-panel';
+import { SessionDigestPanel } from '@/components/strategies/session-digest-panel';
 import { cn } from '@/lib/utils';
 import {
   ApplyScanResponse,
@@ -30,14 +34,17 @@ import {
   ConvictionDigest,
   CronRecipe,
   DurableRunSummary,
+  ModeAutoResolution,
   PaperRunDecision,
   PaperRunStatusResponse,
   PortfolioOrder,
   PortfolioPosition,
   PortfolioPositionsResponse,
   RecipeHintsResponse,
+  RedeploySuggestion,
   ScanCandidate,
   ScanHistoryEntry,
+  SessionDigest,
   Strategy,
   SwarmScanResult,
   strategiesApi,
@@ -275,6 +282,16 @@ export function StrategiesPage() {
   // B2 durable history
   const [durableHistory, setDurableHistory] = useState<DurableRunSummary[]>([]);
 
+  // E3 — session digest center
+  const [sessionDigests, setSessionDigests] = useState<SessionDigest[]>([]);
+  const [digestsLoading, setDigestsLoading] = useState(false);
+
+  // E4 — mode auto-resolver lite (VIX/gap/calendar reason)
+  const [autoResolution, setAutoResolution] = useState<ModeAutoResolution | null>(null);
+
+  // E5 — empty-book redeploy assist (display-only)
+  const [redeploySuggestion, setRedeploySuggestion] = useState<RedeploySuggestion | null>(null);
+
   const analystStrategies = useMemo(
     () => strategies.filter((s) => s.category === 'analyst'),
     [strategies]
@@ -378,6 +395,28 @@ export function StrategiesPage() {
     }
   }, []);
 
+  /** E3 — durable session digests, built from real run fields only. */
+  const refreshDigests = useCallback(async () => {
+    setDigestsLoading(true);
+    try {
+      const res = await strategiesApi.getSessionDigests(10);
+      setSessionDigests(res.digests || []);
+    } catch {
+      setSessionDigests([]);
+    } finally {
+      setDigestsLoading(false);
+    }
+  }, []);
+
+  /** E5 — empty-book redeploy suggestion; display-only, never auto-triggers. */
+  const refreshRedeploySuggestion = useCallback(async () => {
+    try {
+      setRedeploySuggestion(await strategiesApi.getRedeploySuggestion());
+    } catch {
+      setRedeploySuggestion(null);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -393,9 +432,12 @@ export function StrategiesPage() {
       if (m === 'swing' || m === 'day' || m === 'auto') setMode(m);
       const resolved = (trading.resolved_mode || 'swing').toLowerCase();
       setResolvedMode(resolved === 'day' ? 'day' : 'swing');
+      // E4 — prefer the real VIX/gap/calendar auto-resolution reason when present.
+      setAutoResolution(trading.auto_resolution || null);
       setModeReason(
-        trading.last_mode_reason ||
-          (m === 'auto' ? 'UI deterministic fallback — agent VIX pick not wired' : null)
+        trading.auto_resolution?.reason ||
+          trading.last_mode_reason ||
+          (m === 'auto' ? 'Auto-resolution not computed yet — click Refresh reason' : null)
       );
       setModeOverrideActive(trading.override || null);
       if (trading.last_mode_reason) setOverrideReason(trading.last_mode_reason);
@@ -412,7 +454,9 @@ export function StrategiesPage() {
     refreshPortfolio();
     refreshOps();
     refreshHints();
-  }, [load, refreshPortfolio, refreshOps, refreshHints]);
+    refreshDigests();
+    refreshRedeploySuggestion();
+  }, [load, refreshPortfolio, refreshOps, refreshHints, refreshDigests, refreshRedeploySuggestion]);
 
   useEffect(() => {
     const active = run && !TERMINAL.has(run.status);
@@ -505,14 +549,31 @@ export function StrategiesPage() {
       });
       const resolved = (trading.resolved_mode || 'swing').toLowerCase();
       setResolvedMode(resolved === 'day' ? 'day' : 'swing');
+      setAutoResolution(trading.auto_resolution || null);
       setModeReason(
-        trading.last_mode_reason ||
-          (next === 'auto' ? 'UI deterministic fallback — agent VIX pick not wired' : null)
+        trading.auto_resolution?.reason ||
+          trading.last_mode_reason ||
+          (next === 'auto' ? 'Auto-resolution not computed yet — click Refresh reason' : null)
       );
       setModeOverrideActive(trading.override || null);
       toast.success(useOverride && next !== 'auto' ? `Override set to ${next}` : `Mode set to ${next}`);
     } catch (e: any) {
       toast.error(e?.message || 'Failed to set mode');
+    }
+  };
+
+  /** E4 — force a fresh VIX/gap/calendar resolution. Human override still wins server-side. */
+  const refreshModeResolution = async () => {
+    try {
+      const resolution = await strategiesApi.refreshModeResolution();
+      setAutoResolution(resolution);
+      if (resolution.resolved_mode) {
+        setResolvedMode(resolution.resolved_mode === 'day' ? 'day' : 'swing');
+      }
+      setModeReason(resolution.reason || null);
+      toast.success('Mode resolution refreshed');
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to refresh mode resolution');
     }
   };
 
@@ -781,9 +842,7 @@ export function StrategiesPage() {
 
   const autoLabel = mode === 'auto' ? `Auto (resolved: ${resolvedMode})` : mode;
   const autoReasonCopy =
-    mode === 'auto'
-      ? modeReason || 'UI deterministic fallback — agent VIX pick not wired'
-      : null;
+    mode === 'auto' ? modeReason || 'Auto-resolution not computed yet — click Refresh reason' : null;
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -867,13 +926,19 @@ export function StrategiesPage() {
             </TabsList>
 
             <TabsContent value="run" className="space-y-5 mt-4">
+              <RedeployBanner
+                suggestion={redeploySuggestion}
+                scanLoading={scanLoading}
+                onScan={() => runSwarmScan()}
+              />
+
               <div className="grid lg:grid-cols-2 gap-5">
                 <Card>
                   <CardHeader className="pb-3">
                     <CardTitle className="text-base">Trading mode</CardTitle>
                     <CardDescription>
-                      Human override wins for swing/day. Auto uses deterministic UI resolution — not live
-                      VIX/agent pick. Paper-only; never flips live Alpaca mode.
+                      Human override always wins. Auto resolves via documented VIX/gap/calendar rules
+                      (E4) with a persisted reason. Paper-only; never flips live Alpaca mode.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-3">
@@ -920,11 +985,28 @@ export function StrategiesPage() {
                       </p>
                     )}
                     {mode === 'auto' && (
-                      <p className="text-xs text-muted-foreground">
-                        Resolved mode: <span className="text-primary font-medium">{resolvedMode}</span>
-                        {' · '}
-                        {autoReasonCopy}
-                      </p>
+                      <div className="text-xs text-muted-foreground space-y-1">
+                        <p>
+                          Resolved mode: <span className="text-primary font-medium">{resolvedMode}</span>
+                          {' · '}
+                          {autoReasonCopy}
+                        </p>
+                        {autoResolution?.signals && (
+                          <p className="text-[11px]">
+                            signals: VIX {autoResolution.signals.vix ?? '—'} · gap{' '}
+                            {autoResolution.signals.gap_pct != null ? `${autoResolution.signals.gap_pct}%` : '—'}
+                            {autoResolution.signals.event_day ? ' · event day' : ''}
+                          </p>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-2 text-[11px]"
+                          onClick={() => refreshModeResolution()}
+                        >
+                          Refresh reason
+                        </Button>
+                      </div>
                     )}
                   </CardContent>
                 </Card>
@@ -1679,6 +1761,20 @@ export function StrategiesPage() {
                   setPane('run');
                 }}
               />
+
+              <SessionDigestPanel
+                digests={sessionDigests}
+                loading={digestsLoading}
+                onRefresh={() => refreshDigests()}
+                onViewRun={(runId) => {
+                  void viewHistoryRun({ run_id: runId });
+                  setPane('run');
+                }}
+              />
+
+              <DryRunStreakPanel />
+
+              <AutoResearchReviewPanel />
             </TabsContent>
           </Tabs>
         </div>
