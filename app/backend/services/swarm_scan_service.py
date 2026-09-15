@@ -409,8 +409,9 @@ def select_sector_aware(
                     "sector_label": label_of(sector),
                     "kind": "sector_cap" if hit_sector_cap else "slot_cap",
                     "reason": (
-                        f"{label_of(sector)} sector cap — kept {taken[sector]} of {slots} "
-                        f"(≤{round(sector_pct.get(sector, default_pct) * 100)}% sector cap)"
+                        f"{label_of(sector)} sector cap reached — kept {taken[sector]} of "
+                        f"{slots} slots (≤{round(sector_pct.get(sector, default_pct) * 100)}% "
+                        "sector cap)"
                         if hit_sector_cap
                         else f"apply cap reached — {slots} of {APPLY_RECIPE_MAX} tickers filled"
                     ),
