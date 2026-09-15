@@ -17,8 +17,15 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { BookRecords } from '@/components/strategies/book-records';
+import { actionTone } from '@/components/strategies/format';
+import { PortfolioBook } from '@/components/strategies/portfolio-book';
+import { RecipeHintsPanel } from '@/components/strategies/recipe-hints-panel';
+import { RiskPolicyPanel } from '@/components/strategies/risk-policy-panel';
 import { cn } from '@/lib/utils';
 import {
+  ApplyScanResponse,
   AutomationOpsStatus,
   ConvictionDigest,
   CronRecipe,
@@ -28,6 +35,7 @@ import {
   PortfolioOrder,
   PortfolioPosition,
   PortfolioPositionsResponse,
+  RecipeHintsResponse,
   ScanCandidate,
   ScanHistoryEntry,
   Strategy,
@@ -42,8 +50,6 @@ import {
   Play,
   RefreshCw,
   Shield,
-  TrendingDown,
-  TrendingUp,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -100,25 +106,6 @@ interface SessionRunHistoryItem {
   mode: string;
   status: string;
   instrument?: string;
-}
-
-function fmtMoney(n?: number | null) {
-  if (n == null || Number.isNaN(n)) return '—';
-  return n.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
-}
-
-function fmtPct(frac?: number | null) {
-  if (frac == null || Number.isNaN(frac)) return '—';
-  const pct = Math.abs(frac) <= 1 ? frac * 100 : frac;
-  const sign = pct > 0 ? '+' : '';
-  return `${sign}${pct.toFixed(2)}%`;
-}
-
-function actionTone(action: string) {
-  const a = action.toLowerCase();
-  if (a === 'buy' || a === 'cover') return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40';
-  if (a === 'sell' || a === 'short') return 'bg-rose-500/15 text-rose-300 border-rose-500/40';
-  return 'bg-slate-500/15 text-slate-300 border-slate-500/40';
 }
 
 function ConfidenceBar({ value }: { value?: number | null }) {
@@ -273,6 +260,13 @@ export function StrategiesPage() {
   const [intersectUniverse, setIntersectUniverse] = useState(true);
   const [applyTopN, setApplyTopN] = useState(15);
 
+  // Wave D
+  const [pane, setPane] = useState<'run' | 'book'>('run');
+  const [sectorAware, setSectorAware] = useState(true);
+  const [applyResult, setApplyResult] = useState<ApplyScanResponse | null>(null);
+  const [hints, setHints] = useState<RecipeHintsResponse | null>(null);
+  const [hintsLoading, setHintsLoading] = useState(false);
+
   // B5 mode override reason
   const [overrideReason, setOverrideReason] = useState('');
   const [useOverride, setUseOverride] = useState(true);
@@ -344,6 +338,18 @@ export function StrategiesPage() {
   }, []);
 
 
+  /** D5 — pull display-only hints; never writes the recipe. */
+  const refreshHints = useCallback(async () => {
+    setHintsLoading(true);
+    try {
+      setHints(await strategiesApi.getRecipeHints());
+    } catch {
+      setHints(null);
+    } finally {
+      setHintsLoading(false);
+    }
+  }, []);
+
   const refreshOps = useCallback(async () => {
     setOpsLoading(true);
     try {
@@ -405,7 +411,8 @@ export function StrategiesPage() {
     load();
     refreshPortfolio();
     refreshOps();
-  }, [load, refreshPortfolio, refreshOps]);
+    refreshHints();
+  }, [load, refreshPortfolio, refreshOps, refreshHints]);
 
   useEffect(() => {
     const active = run && !TERMINAL.has(run.status);
@@ -446,6 +453,7 @@ export function StrategiesPage() {
             return [item, ...without].slice(0, HISTORY_MAX);
           });
           void strategiesApi.getRunHistory(50).then((h) => setDurableHistory(h.runs || [])).catch(() => {});
+          void refreshHints();
           if (next.status === 'complete') {
             const executed = next.summary?.executed_trades;
             toast.success(executed ? 'Paper run complete — trades submitted' : 'Paper analysis complete');
@@ -464,7 +472,7 @@ export function StrategiesPage() {
       }
     }, 2000);
     return () => clearInterval(id);
-  }, [run?.run_id, run?.status, refreshPortfolio, mode, instrument]);
+  }, [run?.run_id, run?.status, refreshPortfolio, refreshHints, mode, instrument]);
 
   const toggle = (id: string) => {
     if (ALWAYS_ON_IDS.has(id)) return;
@@ -567,19 +575,32 @@ export function StrategiesPage() {
     }
   };
 
-  const applyScanToRecipe = async () => {
+  /** D3 — sector-aware apply. `explicitTickers` comes from an explicit user action. */
+  const applyScanToRecipe = async (explicitTickers?: string[]) => {
     setApplyLoading(true);
     try {
       const n = Math.max(1, Math.min(applyTopN || 15, 15));
       const tickers =
-        scanCandidates.length > 0
-          ? scanCandidates.slice(0, n).map((c) => c.symbol)
-          : undefined;
-      const res = await strategiesApi.applyScanToRecipe({ top_n: n, tickers });
+        explicitTickers && explicitTickers.length > 0
+          ? explicitTickers.slice(0, 15)
+          : scanCandidates.length > 0
+            ? scanCandidates.map((c) => c.symbol)
+            : undefined;
+      const res = await strategiesApi.applyScanToRecipe({
+        top_n: explicitTickers?.length ? Math.min(explicitTickers.length, 15) : n,
+        tickers,
+        sector_aware: sectorAware,
+        mode: recipeMode,
+      });
       setRecipe(res.recipe);
       setRecipeTickers((res.applied_tickers || []).join(', '));
-      toast.success(`Applied ${res.applied_count} tickers to recipe (cap ${res.cap})`);
+      setApplyResult(res);
+      const trimmed = res.sector_caps_trimmed ? ' — sector caps trimmed some tickers' : '';
+      toast.success(
+        `Applied ${res.applied_count} tickers to recipe (cap ${res.cap})${trimmed}`
+      );
       await refreshOps();
+      await refreshHints();
     } catch (e: any) {
       toast.error(e?.message || 'Apply to recipe failed');
     } finally {
@@ -731,6 +752,20 @@ export function StrategiesPage() {
   const convictionDigest: ConvictionDigest | null =
     run?.conviction_digest || run?.summary?.conviction_digest || null;
 
+  /** Book pane run list — durable history when present, session history otherwise. */
+  const bookRuns: DurableRunSummary[] =
+    durableHistory.length > 0
+      ? durableHistory
+      : runHistory.map((h) => ({
+          run_id: h.run_id,
+          status: h.status,
+          mode: h.mode,
+          instrument: h.instrument,
+          tickers: h.tickers,
+          created_at: h.started_at,
+          started_at: h.started_at,
+        }));
+
   const decisions: PaperRunDecision[] = run?.summary?.decisions || [];
   const actionCounts = run?.summary?.action_counts || {};
   const tradeResults = run?.summary?.trade_results || [];
@@ -758,7 +793,10 @@ export function StrategiesPage() {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight text-primary">Strategies</h1>
               <p className="text-sm text-muted-foreground mt-1">
-                Paper swarm research — pick mode, instrument, analysts, and tickers. No CLI required.
+                <span className="text-primary font-medium">Run</span> is the paper swarm: mode,
+                instrument, analysts, tickers, and scan → recipe → launch ops.{' '}
+                <span className="text-primary font-medium">Book</span> holds the portfolio, closes,
+                orders, and run records. Flow graphs live under Advanced.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -818,1130 +856,831 @@ export function StrategiesPage() {
             </div>
           )}
 
-          <Card className="border-blue-500/20">
-            <CardHeader className="pb-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <CardTitle className="text-base">Portfolio</CardTitle>
-                  <CardDescription>Paper account glance, open positions, recent fills</CardDescription>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => refreshPortfolio()}
-                  disabled={portfolioLoading || closing}
-                >
-                  <RefreshCw className={cn('h-3.5 w-3.5 mr-1.5', portfolioLoading && 'animate-spin')} />
-                  Refresh
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {!portfolio?.available ? (
-                <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground">
-                    {portfolio?.message ||
-                      'Portfolio unavailable — check server Alpaca keys and paper mode, then retry.'}
-                  </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => refreshPortfolio()}
-                    disabled={portfolioLoading}
-                  >
-                    Retry portfolio load
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    {[
-                      { label: 'Cash', value: fmtMoney(portfolio.cash) },
-                      { label: 'Equity', value: fmtMoney(portfolio.equity) },
-                      { label: 'Buying power', value: fmtMoney(portfolio.buying_power) },
-                      { label: 'Positions', value: String(portfolio.positions_count ?? positions.length) },
-                    ].map((k) => (
-                      <div key={k.label} className="rounded-lg border bg-ramp-grey-800/30 px-3 py-2">
-                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{k.label}</div>
-                        <div className="text-sm font-semibold tabular-nums mt-0.5">{k.value}</div>
-                      </div>
-                    ))}
-                  </div>
+          <Tabs
+            value={pane}
+            onValueChange={(v) => setPane(v === 'book' ? 'book' : 'run')}
+            className="w-full"
+          >
+            <TabsList className="bg-ramp-grey-800/40">
+              <TabsTrigger value="run">Run</TabsTrigger>
+              <TabsTrigger value="book">Book</TabsTrigger>
+            </TabsList>
 
-                  {positions.length > 0 ? (
-                    <div className="space-y-3">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                          Open positions
-                        </div>
+            <TabsContent value="run" className="space-y-5 mt-4">
+              <div className="grid lg:grid-cols-2 gap-5">
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">Trading mode</CardTitle>
+                    <CardDescription>
+                      Human override wins for swing/day. Auto uses deterministic UI resolution — not live
+                      VIX/agent pick. Paper-only; never flips live Alpaca mode.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="flex flex-wrap gap-2">
+                      {(['swing', 'day', 'auto'] as TradingModeChoice[]).map((m) => (
                         <Button
+                          key={m}
+                          variant={mode === m ? undefined : 'outline'}
                           size="sm"
-                          variant="outline"
-                          disabled={closing || selectedPositions.size === 0}
-                          onClick={() => openCloseSheet([...selectedPositions])}
-                          className="border-rose-500/40 text-rose-200 hover:bg-rose-500/10"
+                          onClick={() => onModeChange(m)}
+                          className={cn(mode === m && 'bg-blue-600 hover:bg-blue-500 text-white')}
                         >
-                          Close selected… ({selectedPositions.size})
+                          {m === 'auto' ? autoLabel : m}
                         </Button>
-                      </div>
-
-                      <div className="overflow-x-auto rounded-md border">
-                        <table className="w-full text-sm">
-                          <thead className="bg-ramp-grey-800/50 text-left text-xs text-muted-foreground">
-                            <tr>
-                              <th className="p-2 w-8">
-                                <Checkbox
-                                  checked={
-                                    positions.length > 0 && selectedPositions.size === positions.length
-                                  }
-                                  onCheckedChange={(c) => {
-                                    if (c) setSelectedPositions(new Set(positions.map((p) => p.symbol)));
-                                    else setSelectedPositions(new Set());
-                                  }}
-                                />
-                              </th>
-                              <th className="p-2">Symbol</th>
-                              <th className="p-2">Side</th>
-                              <th className="p-2">Qty</th>
-                              <th className="p-2">Mkt value</th>
-                              <th className="p-2">P/L $</th>
-                              <th className="p-2">P/L %</th>
-                              <th className="p-2" />
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {positions.map((p) => {
-                              const pl = p.unrealized_pl;
-                              const up = pl != null && pl >= 0;
-                              return (
-                                <tr key={p.symbol} className="border-t border-ramp-grey-800 align-middle">
-                                  <td className="p-2">
-                                    <Checkbox
-                                      checked={selectedPositions.has(p.symbol)}
-                                      onCheckedChange={() => {
-                                        setSelectedPositions((prev) => {
-                                          const next = new Set(prev);
-                                          if (next.has(p.symbol)) next.delete(p.symbol);
-                                          else next.add(p.symbol);
-                                          return next;
-                                        });
-                                      }}
-                                    />
-                                  </td>
-                                  <td className="p-2 font-medium">{p.symbol}</td>
-                                  <td className="p-2 capitalize">{p.side}</td>
-                                  <td className="p-2 tabular-nums">{p.qty}</td>
-                                  <td className="p-2 tabular-nums">{fmtMoney(p.market_value)}</td>
-                                  <td
-                                    className={cn(
-                                      'p-2 tabular-nums',
-                                      pl == null ? '' : up ? 'text-emerald-300' : 'text-rose-300'
-                                    )}
-                                  >
-                                    <span className="inline-flex items-center gap-1">
-                                      {pl != null ? (
-                                        up ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />
-                                      ) : null}
-                                      {fmtMoney(pl)}
-                                    </span>
-                                  </td>
-                                  <td
-                                    className={cn(
-                                      'p-2 tabular-nums',
-                                      p.unrealized_plpc == null
-                                        ? ''
-                                        : (p.unrealized_plpc ?? 0) >= 0
-                                          ? 'text-emerald-300'
-                                          : 'text-rose-300'
-                                    )}
-                                  >
-                                    {fmtPct(p.unrealized_plpc)}
-                                  </td>
-                                  <td className="p-2">
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      className="h-7 text-xs border-rose-500/40 text-rose-200"
-                                      disabled={closing}
-                                      onClick={() => openCloseSheet([p.symbol])}
-                                    >
-                                      Close…
-                                    </Button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
+                      ))}
                     </div>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">No open positions</p>
-                  )}
-
-                  <div>
-                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-2">
-                      Recent orders
+                    <label className="flex items-start gap-2 text-xs cursor-pointer">
+                      <Checkbox
+                        checked={useOverride}
+                        onCheckedChange={(c) => setUseOverride(c === true)}
+                        className="mt-0.5"
+                      />
+                      <span className="text-muted-foreground">
+                        Apply as human override (wins over auto until cleared)
+                      </span>
+                    </label>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-muted-foreground">Override reason</div>
+                      <Input
+                        value={overrideReason}
+                        onChange={(e) => setOverrideReason(e.target.value)}
+                        placeholder="Why are you changing mode?"
+                        className="h-8 text-sm"
+                      />
                     </div>
-                    {orders.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">{ordersMsg || 'No recent orders'}</p>
-                    ) : (
-                      <div className="overflow-x-auto rounded-md border">
-                        <table className="w-full text-sm">
-                          <thead className="bg-ramp-grey-800/50 text-left text-xs text-muted-foreground">
-                            <tr>
-                              <th className="p-2">Symbol</th>
-                              <th className="p-2">Side</th>
-                              <th className="p-2">Qty</th>
-                              <th className="p-2">Filled</th>
-                              <th className="p-2">Avg</th>
-                              <th className="p-2">P&L</th>
-                              <th className="p-2">Status</th>
-                              <th className="p-2">Submitted</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {orders.map((o, i) => {
-                              const showPl = Boolean(o.is_closing) && o.realized_pl != null;
-                              const pl = o.realized_pl;
-                              const up = pl != null && pl >= 0;
-                              return (
-                                <tr
-                                  key={`${o.symbol}-${o.submitted_at}-${i}`}
-                                  className="border-t border-ramp-grey-800"
-                                >
-                                  <td className="p-2 font-medium">{o.symbol || '—'}</td>
-                                  <td className="p-2 uppercase text-xs">{o.side || '—'}</td>
-                                  <td className="p-2 tabular-nums">{o.qty ?? '—'}</td>
-                                  <td className="p-2 tabular-nums">{o.filled_qty ?? '—'}</td>
-                                  <td className="p-2 tabular-nums">{fmtMoney(o.filled_avg_price)}</td>
-                                  <td
-                                    className={cn(
-                                      'p-2 tabular-nums whitespace-nowrap',
-                                      !showPl
-                                        ? 'text-muted-foreground'
-                                        : up
-                                          ? 'text-emerald-300'
-                                          : 'text-rose-300'
-                                    )}
-                                  >
-                                    {showPl ? (
-                                      <span className="inline-flex items-center gap-1">
-                                        {up ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-                                        {fmtMoney(pl)}
-                                        {o.realized_plpc != null ? (
-                                          <span className="text-[10px] opacity-80">({fmtPct(o.realized_plpc)})</span>
-                                        ) : null}
-                                      </span>
-                                    ) : (
-                                      '—'
-                                    )}
-                                  </td>
-                                  <td className="p-2">
-                                    <Badge variant="outline" className="text-[10px]">
-                                      {o.status || '—'}
-                                    </Badge>
-                                  </td>
-                                  <td className="p-2 text-xs text-muted-foreground whitespace-nowrap">
-                                    {o.submitted_at
-                                      ? new Date(o.submitted_at).toLocaleString(undefined, {
-                                          month: 'short',
-                                          day: 'numeric',
-                                          hour: '2-digit',
-                                          minute: '2-digit',
-                                        })
-                                      : '—'}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
+                    {modeOverrideActive && (
+                      <p className="text-xs text-amber-200/90">
+                        Active override: <span className="font-medium">{modeOverrideActive}</span>
+                      </p>
                     )}
-                  </div>
-                </>
-              )}
-            </CardContent>
-          </Card>
+                    {(modeReason || overrideReason) && (
+                      <p className="text-xs text-muted-foreground">
+                        Last reason: <span className="text-primary">{modeReason || overrideReason}</span>
+                      </p>
+                    )}
+                    {mode === 'auto' && (
+                      <p className="text-xs text-muted-foreground">
+                        Resolved mode: <span className="text-primary font-medium">{resolvedMode}</span>
+                        {' · '}
+                        {autoReasonCopy}
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
 
-          <div className="grid lg:grid-cols-2 gap-5">
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Trading mode</CardTitle>
-                <CardDescription>
-                  Human override wins for swing/day. Auto uses deterministic UI resolution — not live
-                  VIX/agent pick. Paper-only; never flips live Alpaca mode.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  {(['swing', 'day', 'auto'] as TradingModeChoice[]).map((m) => (
-                    <Button
-                      key={m}
-                      variant={mode === m ? undefined : 'outline'}
-                      size="sm"
-                      onClick={() => onModeChange(m)}
-                      className={cn(mode === m && 'bg-blue-600 hover:bg-blue-500 text-white')}
-                    >
-                      {m === 'auto' ? autoLabel : m}
-                    </Button>
-                  ))}
-                </div>
-                <label className="flex items-start gap-2 text-xs cursor-pointer">
-                  <Checkbox
-                    checked={useOverride}
-                    onCheckedChange={(c) => setUseOverride(c === true)}
-                    className="mt-0.5"
-                  />
-                  <span className="text-muted-foreground">
-                    Apply as human override (wins over auto until cleared)
-                  </span>
-                </label>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-muted-foreground">Override reason</div>
-                  <Input
-                    value={overrideReason}
-                    onChange={(e) => setOverrideReason(e.target.value)}
-                    placeholder="Why are you changing mode?"
-                    className="h-8 text-sm"
-                  />
-                </div>
-                {modeOverrideActive && (
-                  <p className="text-xs text-amber-200/90">
-                    Active override: <span className="font-medium">{modeOverrideActive}</span>
-                  </p>
-                )}
-                {(modeReason || overrideReason) && (
-                  <p className="text-xs text-muted-foreground">
-                    Last reason: <span className="text-primary">{modeReason || overrideReason}</span>
-                  </p>
-                )}
-                {mode === 'auto' && (
-                  <p className="text-xs text-muted-foreground">
-                    Resolved mode: <span className="text-primary font-medium">{resolvedMode}</span>
-                    {' · '}
-                    {autoReasonCopy}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Instrument</CardTitle>
-                <CardDescription>
-                  User override wins for execution. Options is research-only for now.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="inline-flex rounded-lg border p-0.5 bg-ramp-grey-800/30">
-                  {(['stocks', 'options'] as InstrumentChoice[]).map((inst) => (
-                    <Button
-                      key={inst}
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => onInstrumentChange(inst)}
-                      className={cn(
-                        'rounded-md capitalize min-w-[96px]',
-                        instrument === inst && 'bg-blue-600 hover:bg-blue-500 text-white'
-                      )}
-                    >
-                      {inst}
-                    </Button>
-                  ))}
-                </div>
-                {instrument === 'options' && (
-                  <p className="text-xs text-amber-200/90">
-                    Options paper execute is not wired yet — analysis runs are research-only. Execute toggle
-                    stays off.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <div>
-                <CardTitle className="text-base">Strategies</CardTitle>
-                <CardDescription>
-                  Presets set optional analysts. Risk Manager + Portfolio Manager are always included.
-                </CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex flex-wrap gap-2" role="group" aria-label="Strategy presets">
-                {(
-                  [
-                    ['core', 'Core'],
-                    ['value', 'Value'],
-                    ['growth', 'Growth'],
-                    ['quant', 'Quant'],
-                    ['custom', 'Custom'],
-                  ] as [PresetId, string][]
-                ).map(([id, label]) => (
-                  <Button
-                    key={id}
-                    variant={preset === id ? undefined : 'outline'}
-                    size="sm"
-                    onClick={() => onPresetClick(id)}
-                    className={cn(preset === id && 'bg-blue-600 hover:bg-blue-500 text-white')}
-                  >
-                    {label}
-                  </Button>
-                ))}
-              </div>
-
-              <div className="flex flex-wrap gap-2 items-center">
-                <span className="text-xs uppercase tracking-wide text-muted-foreground mr-1">
-                  Always included
-                </span>
-                {alwaysOnStrategies.length === 0 ? (
-                  <>
-                    <Badge variant="secondary" className="gap-1">
-                      <Lock className="h-3 w-3" />
-                      Risk Manager
-                    </Badge>
-                    <Badge variant="secondary" className="gap-1">
-                      <Lock className="h-3 w-3" />
-                      Portfolio Manager
-                    </Badge>
-                  </>
-                ) : (
-                  alwaysOnStrategies.map((s) => (
-                    <Badge key={s.id} variant="secondary" className="gap-1" title={s.description}>
-                      <Lock className="h-3 w-3" />
-                      {s.name}
-                    </Badge>
-                  ))
-                )}
-              </div>
-
-              {loading ? (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Loading strategies…
-                </div>
-              ) : (
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
-                    Analysts {preset !== 'custom' ? `(${preset})` : '(custom)'}
-                  </div>
-                  <div className="grid sm:grid-cols-2 gap-2">
-                    {analystStrategies.map((s) => {
-                      const checked = selected.has(s.id);
-                      return (
-                        <label
-                          key={s.id}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">Instrument</CardTitle>
+                    <CardDescription>
+                      User override wins for execution. Options is research-only for now.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="inline-flex rounded-lg border p-0.5 bg-ramp-grey-800/30">
+                      {(['stocks', 'options'] as InstrumentChoice[]).map((inst) => (
+                        <Button
+                          key={inst}
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => onInstrumentChange(inst)}
                           className={cn(
-                            'flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-ramp-grey-800/40',
-                            checked && 'border-blue-500/50 bg-blue-500/5'
+                            'rounded-md capitalize min-w-[96px]',
+                            instrument === inst && 'bg-blue-600 hover:bg-blue-500 text-white'
                           )}
                         >
-                          <Checkbox
-                            checked={checked}
-                            onCheckedChange={() => toggle(s.id)}
-                            className="mt-0.5"
-                          />
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium text-primary">{s.name}</div>
-                            <div className="text-xs text-muted-foreground line-clamp-2">{s.description}</div>
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Tickers & run</CardTitle>
-              <CardDescription>Comma-separated, max 20. Example: NVDA, AAPL, MSFT</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex flex-col sm:flex-row gap-3">
-                <Input
-                  value={tickers}
-                  onChange={(e) => setTickers(e.target.value)}
-                  placeholder="NVDA, AAPL, MSFT"
-                  className="flex-1"
-                />
-                <Button
-                  size="lg"
-                  onClick={onRun}
-                  disabled={running || loading || !serverKeys}
-                  className="bg-blue-600 hover:bg-blue-500 text-white min-w-[220px]"
-                  title={!serverKeys ? 'FAIL_CLOSED: server Alpaca keys missing' : undefined}
-                >
-                  {running ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                      Running…
-                    </>
-                  ) : (
-                    <>
-                      <Play className="h-4 w-4 mr-2" />
-                      {runButtonLabel}
-                    </>
-                  )}
-                </Button>
-              </div>
-
-              <label
-                className={cn(
-                  'flex items-start gap-3 rounded-lg border p-3 cursor-pointer',
-                  executeTrades && 'border-blue-500/50 bg-blue-500/5',
-                  instrument === 'options' && 'opacity-60 cursor-not-allowed'
-                )}
-              >
-                <Checkbox
-                  checked={executeTrades}
-                  disabled={instrument === 'options'}
-                  onCheckedChange={(c) => setExecuteTrades(c === true)}
-                  className="mt-0.5"
-                />
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-primary">Execute paper trades on Alpaca</div>
-                  <div className="text-xs text-muted-foreground mt-0.5">
-                    Default is analysis-only. When checked, Run places paper orders after the swarm finishes
-                    (stocks only). Never live.
-                    {instrument === 'options' ? ' Disabled for options (research-only).' : ''}
-                  </div>
-                </div>
-              </label>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Recent paper runs</CardTitle>
-              <CardDescription>
-                Durable history (last 50 on disk). Single-replica — not shared across multi-replica deploys.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {durableHistory.length === 0 && runHistory.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No paper runs recorded yet. Complete a Strategies or cron run to populate history.
-                </p>
-              ) : (
-                <ul className="space-y-2">
-                  {(durableHistory.length > 0 ? durableHistory : runHistory.map((h) => ({
-                    run_id: h.run_id,
-                    status: h.status,
-                    mode: h.mode,
-                    instrument: h.instrument,
-                    tickers: h.tickers,
-                    created_at: h.started_at,
-                    started_at: h.started_at,
-                  }))).map((h) => (
-                    <li
-                      key={h.run_id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2"
-                    >
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium truncate">
-                          {(h.tickers || []).slice(0, 5).join(', ') || '—'}
-                          {(h.tickers || []).length > 5 ? ` +${(h.tickers || []).length - 5}` : ''}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {new Date(h.started_at || h.created_at || '').toLocaleString(undefined, {
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}{' '}
-                          · {h.mode} · {h.instrument || 'stocks'} ·{' '}
-                          <span className="font-mono">{h.run_id.slice(0, 8)}</span>
-                          {'conviction_digest' in h && h.conviction_digest
-                            ? ` · Δ${h.conviction_digest.consensus_count || 0}/?${h.conviction_digest.contested_count || 0}/⛔${h.conviction_digest.risk_rejected_count || 0}`
-                            : ''}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Badge
-                          variant={
-                            h.status === 'complete'
-                              ? 'success'
-                              : h.status === 'error' || h.status === 'fail_closed'
-                                ? 'destructive'
-                                : 'warning'
-                          }
-                          className="capitalize text-[10px]"
-                        >
-                          {h.status}
-                        </Badge>
-                        <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => viewHistoryRun(h)}>
-                          View
+                          {inst}
                         </Button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
-
-
-          <Card>
-            <CardHeader className="pb-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <CardTitle className="text-base">Ops / Automation</CardTitle>
-                  <CardDescription>
-                    Cron recipe, swarm scan, last paper-run, monitor, and conviction digest. Paper-only; no secrets.
-                  </CardDescription>
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-xs"
-                  onClick={() => refreshOps()}
-                  disabled={opsLoading}
-                >
-                  {opsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                  <span className="ml-1">Refresh</span>
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              <div className="flex flex-wrap gap-2 items-center">
-                <Badge variant="outline">paper-only</Badge>
-                <Badge variant={opsStatus?.monitor_dry_run_env !== false ? 'success' : 'warning'}>
-                  monitor dry_run env: {opsStatus?.monitor_dry_run_env === false ? 'false (hot allowed)' : 'true'}
-                </Badge>
-                <Badge variant={opsStatus?.cron_execute_env_allows ? 'warning' : 'success'}>
-                  cron execute env: {opsStatus?.cron_execute_env_allows ? 'allows' : 'blocked (safe)'}
-                </Badge>
-              </div>
-
-              <div className="rounded-lg border px-3 py-3 space-y-3">
-                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                  Cron recipe (B1)
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs text-muted-foreground">Tickers</div>
-                  <Input
-                    value={recipeTickers}
-                    onChange={(e) => setRecipeTickers(e.target.value)}
-                    className="h-8 text-sm"
-                    placeholder="NVDA, AAPL, MSFT"
-                  />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {(['core', 'value', 'growth', 'quant', 'custom'] as PresetId[]).map((p) => (
-                    <Button
-                      key={p}
-                      size="sm"
-                      variant={recipePreset === p ? undefined : 'outline'}
-                      className={cn('h-7 capitalize', recipePreset === p && 'bg-blue-600 text-white')}
-                      onClick={() => setRecipePreset(p)}
-                    >
-                      {p}
-                    </Button>
-                  ))}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {(['swing', 'day', 'auto'] as TradingModeChoice[]).map((m) => (
-                    <Button
-                      key={m}
-                      size="sm"
-                      variant={recipeMode === m ? undefined : 'outline'}
-                      className={cn('h-7', recipeMode === m && 'bg-blue-600 text-white')}
-                      onClick={() => setRecipeMode(m)}
-                    >
-                      {m}
-                    </Button>
-                  ))}
-                </div>
-                <div className="flex flex-wrap gap-2 items-center">
-                  <Button
-                    size="sm"
-                    className="h-8 bg-blue-600 hover:bg-blue-500 text-white"
-                    disabled={recipeSaving}
-                    onClick={() => saveRecipe()}
-                  >
-                    {recipeSaving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
-                    Save recipe
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-8"
-                    disabled={recipeSaving}
-                    onClick={() => setExecuteConfirmOpen(true)}
-                  >
-                    Enable execute for next cron…
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-8 text-xs"
-                    disabled={recipeSaving || !recipe?.execute_trades}
-                    onClick={() => saveRecipe({ execute_trades: false })}
-                  >
-                    Clear execute flag
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Recipe execute_trades: <strong>{String(recipe?.execute_trades ?? false)}</strong>
-                  {' · '}
-                  Effective next cron:{' '}
-                  <strong>
-                    {String(
-                      Boolean(recipe?.execute_trades) && Boolean(opsStatus?.cron_execute_env_allows)
+                      ))}
+                    </div>
+                    {instrument === 'options' && (
+                      <p className="text-xs text-amber-200/90">
+                        Options paper execute is not wired yet — analysis runs are research-only. Execute toggle
+                        stays off.
+                      </p>
                     )}
-                  </strong>
-                  {' '}
-                  (dual gate: recipe + SWARM_CRON_EXECUTE_TRADES)
-                </p>
+                  </CardContent>
+                </Card>
               </div>
 
-              <div className="rounded-lg border px-3 py-3 space-y-3">
-                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                  Swarm scan (Wave C)
-                </div>
-                <div className="flex flex-wrap gap-2 items-center">
-                  <Badge variant={opsStatus?.auto_launch_env_allows ? 'warning' : 'success'}>
-                    auto-launch env:{' '}
-                    {opsStatus?.auto_launch_env_allows ? 'on' : 'off (scan-only cron)'}
-                  </Badge>
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                    <Checkbox
-                      checked={intersectUniverse}
-                      onCheckedChange={(v) => setIntersectUniverse(v === true)}
-                    />
-                    Intersect mode universe (default ON)
-                  </label>
-                </div>
-                <div className="flex flex-wrap gap-2 items-center">
-                  <Button
-                    size="sm"
-                    className="h-8 bg-blue-600 hover:bg-blue-500 text-white"
-                    disabled={scanLoading}
-                    onClick={() => runSwarmScan()}
-                  >
-                    {scanLoading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
-                    Scan market
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-8"
-                    disabled={applyLoading || (!scanCandidates.length && !opsStatus?.last_scan)}
-                    onClick={() => applyScanToRecipe()}
-                  >
-                    {applyLoading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
-                    Apply to recipe
-                  </Button>
-                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                    top
-                    <Input
-                      type="number"
-                      min={1}
-                      max={15}
-                      value={applyTopN}
-                      onChange={(e) =>
-                        setApplyTopN(Math.max(1, Math.min(15, Number(e.target.value) || 15)))
-                      }
-                      className="h-7 w-14 text-xs"
-                    />
-                    /15
+              <RiskPolicyPanel mode={mode} />
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <div>
+                    <CardTitle className="text-base">Strategies</CardTitle>
+                    <CardDescription>
+                      Presets set optional analysts. Risk Manager + Portfolio Manager are always included.
+                    </CardDescription>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-8"
-                    disabled={launchLoading}
-                    onClick={() => launchAnalysisFromScan()}
-                  >
-                    {launchLoading ? (
-                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                    ) : (
-                      <Play className="h-3 w-3 mr-1" />
-                    )}
-                    Run analysis
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Paper-only. Run analysis uses recipe/CORE analysts (analysis-only default).
-                  Execute still dual-gated. Cron apply/launch only if SWARM_AUTO_LAUNCH.
-                </p>
-                {scanResult?.mode ? (
-                  <p className="text-xs text-muted-foreground">Last run mode: {scanResult.mode}</p>
-                ) : null}
-                {scanCandidates.length > 0 ? (
-                  <ul className="space-y-0.5 max-h-36 overflow-auto font-mono text-xs">
-                    {scanCandidates.slice(0, 20).map((c) => (
-                      <li key={c.symbol}>
-                        {c.symbol}{' '}
-                        <span className="text-muted-foreground">
-                          [{(c.sources || []).join('+') || '—'}]
-                          {typeof c.change_pct === 'number' ? ` ${c.change_pct}%` : ''}
-                        </span>
-                      </li>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-wrap gap-2" role="group" aria-label="Strategy presets">
+                    {(
+                      [
+                        ['core', 'Core'],
+                        ['value', 'Value'],
+                        ['growth', 'Growth'],
+                        ['quant', 'Quant'],
+                        ['custom', 'Custom'],
+                      ] as [PresetId, string][]
+                    ).map(([id, label]) => (
+                      <Button
+                        key={id}
+                        variant={preset === id ? undefined : 'outline'}
+                        size="sm"
+                        onClick={() => onPresetClick(id)}
+                        className={cn(preset === id && 'bg-blue-600 hover:bg-blue-500 text-white')}
+                      >
+                        {label}
+                      </Button>
                     ))}
-                  </ul>
-                ) : opsStatus?.last_scan?.tickers?.length ? (
-                  <p className="text-xs text-muted-foreground font-mono">
-                    Last scan: {(opsStatus.last_scan.tickers || []).slice(0, 12).join(', ')}
-                    {opsStatus.last_scan.candidate_count
-                      ? ` (${opsStatus.last_scan.candidate_count})`
-                      : ''}
-                  </p>
-                ) : (
-                  <p className="text-xs text-muted-foreground">No scan yet — click Scan market.</p>
-                )}
-                {recentScans.length > 0 ? (
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Recent scans (C5)
-                    </div>
-                    <ul className="space-y-0.5 max-h-28 overflow-auto text-xs text-muted-foreground">
-                      {recentScans.slice(0, 8).map((s, i) => (
-                        <li key={`${s.updated_at || s.timestamp || i}`}>
-                          {s.updated_at || s.timestamp || '—'} · {s.mode || '—'} ·{' '}
-                          {s.candidate_count ?? (s.tickers || []).length} tickers
-                          {s.intersect_universe ? ' · intersect' : ''}
-                        </li>
-                      ))}
-                    </ul>
                   </div>
-                ) : null}
-              </div>
 
-              <div className="rounded-lg border px-3 py-2 space-y-1">
-                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                  Last conviction digest
-                </div>
-                {opsStatus?.last_conviction_digest ? (
-                  <div className="text-xs text-muted-foreground space-y-1">
-                    <div>
-                      consensus {(opsStatus.last_conviction_digest.consensus || []).length}
-                      {' · '}contested {(opsStatus.last_conviction_digest.contested || []).length}
-                      {' · '}risk-rejected {(opsStatus.last_conviction_digest.risk_rejected || []).length}
-                      {opsStatus.last_conviction_digest_meta?.run_id
-                        ? ` · run ${opsStatus.last_conviction_digest_meta.run_id.slice(0, 8)}`
-                        : ''}
-                    </div>
-                    <ul className="space-y-0.5 max-h-28 overflow-auto font-mono">
-                      {(opsStatus.last_conviction_digest.consensus || []).slice(0, 6).map((c) => (
-                        <li key={`c-${c.ticker}`}>
-                          ✓ {c.ticker} {c.direction} ({c.agree}/{c.total})
-                        </li>
-                      ))}
-                      {(opsStatus.last_conviction_digest.contested || []).slice(0, 4).map((c) => (
-                        <li key={`x-${c.ticker}`}>
-                          ? {c.ticker} bull {c.bullish} / bear {c.bearish}
-                        </li>
-                      ))}
-                      {(opsStatus.last_conviction_digest.risk_rejected || []).slice(0, 4).map((c) => (
-                        <li key={`r-${c.ticker}`}>⛔ {c.ticker} — {c.reason}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">No digest yet — complete a paper run.</p>
-                )}
-              </div>
-
-              <div className="rounded-lg border px-3 py-2 space-y-1">
-                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                  Last cron paper-run
-                </div>
-                {opsStatus?.last_paper_run?.run_id ? (
-                  <>
-                    <div className="font-mono text-xs break-all">{opsStatus.last_paper_run.run_id}</div>
-                    <div className="text-xs text-muted-foreground">
-                      status: <span className="capitalize">{opsStatus.last_paper_run.status || '—'}</span>
-                      {opsStatus.last_paper_run.mode ? ` · ${opsStatus.last_paper_run.mode}` : ''}
-                      {opsStatus.last_paper_run.created_at
-                        ? ` · ${new Date(opsStatus.last_paper_run.created_at).toLocaleString()}`
-                        : ''}
-                    </div>
-                  </>
-                ) : (
-                  <p className="text-xs text-muted-foreground">No cron paper-run recorded yet.</p>
-                )}
-              </div>
-              <div className="rounded-lg border px-3 py-2 space-y-1">
-                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                  Last monitor actions
-                </div>
-                {opsStatus?.last_monitor ? (
-                  <>
-                    <div className="text-xs text-muted-foreground">
-                      {opsStatus.last_monitor.timestamp
-                        ? new Date(opsStatus.last_monitor.timestamp).toLocaleString()
-                        : '—'}
-                      {' · '}
-                      dry_run={String(opsStatus.last_monitor.dry_run ?? '—')}
-                      {opsStatus.last_monitor.trading_mode
-                        ? ` · ${opsStatus.last_monitor.trading_mode}`
-                        : ''}
-                      {typeof opsStatus.last_monitor.stops_triggered === 'number'
-                        ? ` · stops ${opsStatus.last_monitor.stops_triggered}`
-                        : ''}
-                    </div>
-                    {(opsStatus.last_monitor.actions || []).length === 0 ? (
-                      <p className="text-xs text-muted-foreground">No would-sell / sell actions.</p>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <span className="text-xs uppercase tracking-wide text-muted-foreground mr-1">
+                      Always included
+                    </span>
+                    {alwaysOnStrategies.length === 0 ? (
+                      <>
+                        <Badge variant="secondary" className="gap-1">
+                          <Lock className="h-3 w-3" />
+                          Risk Manager
+                        </Badge>
+                        <Badge variant="secondary" className="gap-1">
+                          <Lock className="h-3 w-3" />
+                          Portfolio Manager
+                        </Badge>
+                      </>
                     ) : (
-                      <ul className="space-y-1 max-h-40 overflow-auto">
-                        {(opsStatus.last_monitor.actions || []).slice(0, 12).map((a, i) => (
-                          <li key={i} className="text-xs font-mono truncate">
-                            {String(a.stop_type || a.action || 'action')}:{' '}
-                            {String(a.symbol || a.ticker || '?')}
-                            {a.dry_run ? ' [dry-run]' : ''}
-                            {a.reason ? ` — ${String(a.reason).slice(0, 80)}` : ''}
+                      alwaysOnStrategies.map((s) => (
+                        <Badge key={s.id} variant="secondary" className="gap-1" title={s.description}>
+                          <Lock className="h-3 w-3" />
+                          {s.name}
+                        </Badge>
+                      ))
+                    )}
+                  </div>
+
+                  {loading ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Loading strategies…
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
+                        Analysts {preset !== 'custom' ? `(${preset})` : '(custom)'}
+                      </div>
+                      <div className="grid sm:grid-cols-2 gap-2">
+                        {analystStrategies.map((s) => {
+                          const checked = selected.has(s.id);
+                          return (
+                            <label
+                              key={s.id}
+                              className={cn(
+                                'flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-ramp-grey-800/40',
+                                checked && 'border-blue-500/50 bg-blue-500/5'
+                              )}
+                            >
+                              <Checkbox
+                                checked={checked}
+                                onCheckedChange={() => toggle(s.id)}
+                                className="mt-0.5"
+                              />
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium text-primary">{s.name}</div>
+                                <div className="text-xs text-muted-foreground line-clamp-2">{s.description}</div>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Tickers & run</CardTitle>
+                  <CardDescription>Comma-separated, max 20. Example: NVDA, AAPL, MSFT</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <Input
+                      value={tickers}
+                      onChange={(e) => setTickers(e.target.value)}
+                      placeholder="NVDA, AAPL, MSFT"
+                      className="flex-1"
+                    />
+                    <Button
+                      size="lg"
+                      onClick={onRun}
+                      disabled={running || loading || !serverKeys}
+                      className="bg-blue-600 hover:bg-blue-500 text-white min-w-[220px]"
+                      title={!serverKeys ? 'FAIL_CLOSED: server Alpaca keys missing' : undefined}
+                    >
+                      {running ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                          Running…
+                        </>
+                      ) : (
+                        <>
+                          <Play className="h-4 w-4 mr-2" />
+                          {runButtonLabel}
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  <label
+                    className={cn(
+                      'flex items-start gap-3 rounded-lg border p-3 cursor-pointer',
+                      executeTrades && 'border-blue-500/50 bg-blue-500/5',
+                      instrument === 'options' && 'opacity-60 cursor-not-allowed'
+                    )}
+                  >
+                    <Checkbox
+                      checked={executeTrades}
+                      disabled={instrument === 'options'}
+                      onCheckedChange={(c) => setExecuteTrades(c === true)}
+                      className="mt-0.5"
+                    />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-primary">Execute paper trades on Alpaca</div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        Default is analysis-only. When checked, Run places paper orders after the swarm finishes
+                        (stocks only). Never live.
+                        {instrument === 'options' ? ' Disabled for options (research-only).' : ''}
+                      </div>
+                    </div>
+                  </label>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <CardTitle className="text-base">Ops — scan, recipe, launch</CardTitle>
+                      <CardDescription>
+                        Cron recipe plus swarm scan → apply → launch, on the Run surface. Paper-only; no
+                        secrets. Monitor, digest, and cron receipts live in the Book pane.
+                      </CardDescription>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={() => refreshOps()}
+                      disabled={opsLoading}
+                    >
+                      {opsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                      <span className="ml-1">Refresh</span>
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3 text-sm">
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <Badge variant="outline">paper-only</Badge>
+                    <Badge variant={opsStatus?.monitor_dry_run_env !== false ? 'success' : 'warning'}>
+                      monitor dry_run env: {opsStatus?.monitor_dry_run_env === false ? 'false (hot allowed)' : 'true'}
+                    </Badge>
+                    <Badge variant={opsStatus?.cron_execute_env_allows ? 'warning' : 'success'}>
+                      cron execute env: {opsStatus?.cron_execute_env_allows ? 'allows' : 'blocked (safe)'}
+                    </Badge>
+                  </div>
+
+                  <div className="rounded-lg border px-3 py-3 space-y-3">
+                    <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      Cron recipe (B1)
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Tickers</div>
+                      <Input
+                        value={recipeTickers}
+                        onChange={(e) => setRecipeTickers(e.target.value)}
+                        className="h-8 text-sm"
+                        placeholder="NVDA, AAPL, MSFT"
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {(['core', 'value', 'growth', 'quant', 'custom'] as PresetId[]).map((p) => (
+                        <Button
+                          key={p}
+                          size="sm"
+                          variant={recipePreset === p ? undefined : 'outline'}
+                          className={cn('h-7 capitalize', recipePreset === p && 'bg-blue-600 text-white')}
+                          onClick={() => setRecipePreset(p)}
+                        >
+                          {p}
+                        </Button>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {(['swing', 'day', 'auto'] as TradingModeChoice[]).map((m) => (
+                        <Button
+                          key={m}
+                          size="sm"
+                          variant={recipeMode === m ? undefined : 'outline'}
+                          className={cn('h-7', recipeMode === m && 'bg-blue-600 text-white')}
+                          onClick={() => setRecipeMode(m)}
+                        >
+                          {m}
+                        </Button>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap gap-2 items-center">
+                      <Button
+                        size="sm"
+                        className="h-8 bg-blue-600 hover:bg-blue-500 text-white"
+                        disabled={recipeSaving}
+                        onClick={() => saveRecipe()}
+                      >
+                        {recipeSaving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Save recipe
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        disabled={recipeSaving}
+                        onClick={() => setExecuteConfirmOpen(true)}
+                      >
+                        Enable execute for next cron…
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-8 text-xs"
+                        disabled={recipeSaving || !recipe?.execute_trades}
+                        onClick={() => saveRecipe({ execute_trades: false })}
+                      >
+                        Clear execute flag
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Recipe execute_trades: <strong>{String(recipe?.execute_trades ?? false)}</strong>
+                      {' · '}
+                      Effective next cron:{' '}
+                      <strong>
+                        {String(
+                          Boolean(recipe?.execute_trades) && Boolean(opsStatus?.cron_execute_env_allows)
+                        )}
+                      </strong>
+                      {' '}
+                      (dual gate: recipe + SWARM_CRON_EXECUTE_TRADES)
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border px-3 py-3 space-y-3">
+                    <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      Swarm scan (Wave C)
+                    </div>
+                    <div className="flex flex-wrap gap-2 items-center">
+                      <Badge variant={opsStatus?.auto_launch_env_allows ? 'warning' : 'success'}>
+                        auto-launch env:{' '}
+                        {opsStatus?.auto_launch_env_allows ? 'on' : 'off (scan-only cron)'}
+                      </Badge>
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                        <Checkbox
+                          checked={intersectUniverse}
+                          onCheckedChange={(v) => setIntersectUniverse(v === true)}
+                        />
+                        Intersect mode universe (default ON)
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                        <Checkbox
+                          checked={sectorAware}
+                          onCheckedChange={(v) => setSectorAware(v === true)}
+                        />
+                        Sector-aware apply (underweight first, default ON)
+                      </label>
+                    </div>
+                    <div className="flex flex-wrap gap-2 items-center">
+                      <Button
+                        size="sm"
+                        className="h-8 bg-blue-600 hover:bg-blue-500 text-white"
+                        disabled={scanLoading}
+                        onClick={() => runSwarmScan()}
+                      >
+                        {scanLoading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Scan market
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        disabled={applyLoading || (!scanCandidates.length && !opsStatus?.last_scan)}
+                        onClick={() => applyScanToRecipe()}
+                      >
+                        {applyLoading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Apply to recipe
+                      </Button>
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        top
+                        <Input
+                          type="number"
+                          min={1}
+                          max={15}
+                          value={applyTopN}
+                          onChange={(e) =>
+                            setApplyTopN(Math.max(1, Math.min(15, Number(e.target.value) || 15)))
+                          }
+                          className="h-7 w-14 text-xs"
+                        />
+                        /15
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        disabled={launchLoading}
+                        onClick={() => launchAnalysisFromScan()}
+                      >
+                        {launchLoading ? (
+                          <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                        ) : (
+                          <Play className="h-3 w-3 mr-1" />
+                        )}
+                        Run analysis
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Paper-only. Run analysis uses recipe/CORE analysts (analysis-only default).
+                      Execute still dual-gated. Cron apply/launch only if SWARM_AUTO_LAUNCH.
+                    </p>
+                    {scanResult?.mode ? (
+                      <p className="text-xs text-muted-foreground">Last run mode: {scanResult.mode}</p>
+                    ) : null}
+                    {scanCandidates.length > 0 ? (
+                      <ul className="space-y-0.5 max-h-36 overflow-auto font-mono text-xs">
+                        {scanCandidates.slice(0, 20).map((c) => (
+                          <li key={c.symbol}>
+                            {c.symbol}{' '}
+                            <span className="text-muted-foreground">
+                              [{(c.sources || []).join('+') || '—'}]
+                              {typeof c.change_pct === 'number' ? ` ${c.change_pct}%` : ''}
+                            </span>
                           </li>
                         ))}
                       </ul>
+                    ) : opsStatus?.last_scan?.tickers?.length ? (
+                      <p className="text-xs text-muted-foreground font-mono">
+                        Last scan: {(opsStatus.last_scan.tickers || []).slice(0, 12).join(', ')}
+                        {opsStatus.last_scan.candidate_count
+                          ? ` (${opsStatus.last_scan.candidate_count})`
+                          : ''}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">No scan yet — click Scan market.</p>
                     )}
-                  </>
-                ) : (
-                  <p className="text-xs text-muted-foreground">No monitor run recorded yet.</p>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Dialog open={executeConfirmOpen} onOpenChange={setExecuteConfirmOpen}>
-            <DialogContent className="sm:max-w-md">
-              <DialogHeader>
-                <DialogTitle>Enable execute_trades for next cron?</DialogTitle>
-                <DialogDescription>
-                  This sets recipe execute_trades=true. Cron will still force false unless env
-                  SWARM_CRON_EXECUTE_TRADES is truthy (dual gate). Paper-only — never live.
-                  {opsStatus?.cron_execute_env_allows
-                    ? ' Env currently ALLOWS execute.'
-                    : ' Env currently BLOCKS execute (safe).'}
-                </DialogDescription>
-              </DialogHeader>
-              <DialogFooter className="gap-2 sm:gap-0">
-                <Button variant="outline" onClick={() => setExecuteConfirmOpen(false)}>
-                  Cancel
-                </Button>
-                <Button
-                  className="bg-amber-600 hover:bg-amber-500 text-white"
-                  disabled={recipeSaving}
-                  onClick={() => saveRecipe({ execute_trades: true })}
-                >
-                  Confirm enable
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-
-          {run && (
-            <Card className="overflow-hidden">
-              <CardHeader className="pb-3 border-b border-ramp-grey-800/80 bg-ramp-grey-800/20">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <CardTitle className="text-base">Swarm research results</CardTitle>
-                    <CardDescription className="font-mono text-xs mt-1">{run.run_id}</CardDescription>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline" className="capitalize">
-                      {(run.instrument || run.summary?.instrument || instrument) as string}
-                    </Badge>
-                    <Badge variant="outline" className="capitalize">
-                      {run.mode || mode}
-                    </Badge>
-                    <Badge
-                      variant={
-                        run.status === 'complete'
-                          ? 'success'
-                          : run.status === 'error' || run.status === 'fail_closed'
-                            ? 'destructive'
-                            : 'warning'
-                      }
-                    >
-                      {run.status}
-                    </Badge>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-5 pt-5">
-                {run.error && (
-                  <div className="text-sm text-red-300 whitespace-pre-wrap rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2">
-                    {run.error}
-                  </div>
-                )}
-                {run.summary?.execute_blocked_reason && (
-                  <div className="text-sm text-amber-200 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
-                    {run.summary.execute_blocked_reason}
-                  </div>
-                )}
-
-                {convictionDigest && (
-                  <div className="rounded-lg border px-3 py-3 space-y-2">
-                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                      Conviction digest (from agent signals)
-                    </div>
-                    <div className="flex flex-wrap gap-2 text-xs">
-                      <Badge variant="success">
-                        consensus {(convictionDigest.consensus || []).length}
-                      </Badge>
-                      <Badge variant="warning">
-                        contested {(convictionDigest.contested || []).length}
-                      </Badge>
-                      <Badge variant="destructive">
-                        risk-rejected {(convictionDigest.risk_rejected || []).length}
-                      </Badge>
-                    </div>
-                    <ul className="text-xs font-mono space-y-0.5 max-h-36 overflow-auto">
-                      {(convictionDigest.consensus || []).map((c) => (
-                        <li key={`rc-${c.ticker}`}>
-                          ✓ {c.ticker} agree {c.direction} ({c.agree}/{c.total})
-                        </li>
-                      ))}
-                      {(convictionDigest.contested || []).map((c) => (
-                        <li key={`rx-${c.ticker}`}>
-                          ? {c.ticker} bull {c.bullish} / bear {c.bearish} / neu {c.neutral}
-                        </li>
-                      ))}
-                      {(convictionDigest.risk_rejected || []).map((c) => (
-                        <li key={`rr-${c.ticker}`}>⛔ {c.ticker} — {c.reason}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {Object.keys(actionCounts).length > 0 && (
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                    {(['buy', 'sell', 'short', 'cover', 'hold'] as const).map((k) => (
-                      <div key={k} className={cn('rounded-lg border px-3 py-2 text-center', actionTone(k))}>
-                        <div className="text-[10px] uppercase tracking-wide opacity-80">{k}</div>
-                        <div className="text-lg font-semibold tabular-nums">{actionCounts[k] ?? 0}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {decisions.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                      Decisions
-                    </div>
-                    <div className="grid gap-2">
-                      {decisions.map((d) => {
-                        const open = expanded.has(d.ticker);
-                        const agentInst = d.agent_instrument;
-                        const effective = d.instrument || run.summary?.instrument || instrument;
-                        const override =
-                          agentInst && effective && agentInst !== effective
-                            ? `agent: ${agentInst} → you: ${effective}`
-                            : agentInst
-                              ? `agent: ${agentInst}`
-                              : null;
-                        return (
-                          <div
-                            key={d.ticker}
-                            className="rounded-xl border bg-ramp-grey-800/20 overflow-hidden"
-                          >
-                            <button
-                              type="button"
-                              className="w-full flex flex-wrap items-center gap-3 p-3 text-left hover:bg-ramp-grey-800/40"
-                              onClick={() =>
-                                setExpanded((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(d.ticker)) next.delete(d.ticker);
-                                  else next.add(d.ticker);
-                                  return next;
-                                })
-                              }
-                            >
-                              {open ? (
-                                <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
-                              ) : (
-                                <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
-                              )}
-                              <span className="font-semibold tracking-tight min-w-[64px]">{d.ticker}</span>
-                              <span
-                                className={cn(
-                                  'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium uppercase',
-                                  actionTone(d.action)
-                                )}
-                              >
-                                {d.action}
-                              </span>
-                              <span className="text-xs text-muted-foreground">qty {d.quantity ?? '—'}</span>
-                              <div className="flex-1 min-w-[120px]">
-                                <ConfidenceBar value={d.confidence} />
-                              </div>
-                              {override && (
-                                <Badge variant="outline" className="text-[10px] font-normal">
-                                  {override}
-                                </Badge>
-                              )}
-                            </button>
-                            {open && (
-                              <div className="px-4 pb-3 pt-0 border-t border-ramp-grey-800/80">
-                                <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed pt-3">
-                                  {d.reasoning || 'No reasoning provided.'}
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {tradeResults.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                      Trade results
-                    </div>
-                    <div className="overflow-x-auto rounded-md border">
-                      <table className="w-full text-sm">
-                        <thead className="bg-ramp-grey-800/50 text-left text-xs text-muted-foreground">
-                          <tr>
-                            <th className="p-2">Ticker</th>
-                            <th className="p-2">Action</th>
-                            <th className="p-2">Qty</th>
-                            <th className="p-2">Status</th>
-                            <th className="p-2">Note</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {tradeResults.map((tr, i) => (
-                            <tr key={i} className="border-t border-ramp-grey-800">
-                              <td className="p-2 font-medium">{String(tr.ticker ?? '—')}</td>
-                              <td className="p-2 uppercase text-xs">{String(tr.action ?? '—')}</td>
-                              <td className="p-2 tabular-nums">{String(tr.qty ?? tr.quantity ?? '—')}</td>
-                              <td className="p-2">
-                                <Badge
-                                  variant={tr.success ? 'success' : 'destructive'}
-                                  className="text-[10px]"
-                                >
-                                  {String(tr.status ?? (tr.success ? 'ok' : 'failed'))}
-                                </Badge>
-                              </td>
-                              <td className="p-2 text-xs text-muted-foreground truncate max-w-xs">
-                                {String(tr.reason ?? '')}
-                              </td>
-                            </tr>
+                    {recentScans.length > 0 ? (
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                          Recent scans (C5)
+                        </div>
+                        <ul className="space-y-0.5 max-h-28 overflow-auto text-xs text-muted-foreground">
+                          {recentScans.slice(0, 8).map((s, i) => (
+                            <li key={`${s.updated_at || s.timestamp || i}`}>
+                              {s.updated_at || s.timestamp || '—'} · {s.mode || '—'} ·{' '}
+                              {s.candidate_count ?? (s.tickers || []).length} tickers
+                              {s.intersect_universe ? ' · intersect' : ''}
+                            </li>
                           ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
+                        </ul>
+                      </div>
+                    ) : null}
 
-                {!run.error && decisions.length === 0 && !TERMINAL.has(run.status) && (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground py-6 justify-center">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Agents analyzing… this can take a few minutes.
+                    {applyResult ? (
+                      <div className="space-y-2 rounded-md border border-blue-500/30 bg-blue-500/5 px-3 py-2">
+                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                          Last apply — sector-aware (D3)
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Applied{' '}
+                          <span className="font-mono text-primary">
+                            {(applyResult.applied_tickers || []).join(', ')}
+                          </span>{' '}
+                          ({applyResult.applied_count}/{applyResult.cap})
+                          {applyResult.sector_aware === false ? ' · sector-aware off' : ''}
+                        </div>
+                        {(applyResult.sectors || []).length > 0 ? (
+                          <ul className="text-xs text-muted-foreground space-y-0.5">
+                            {(applyResult.sectors || []).map((s) => (
+                              <li key={s.sector}>
+                                {s.label}: {s.picked}/{s.slot_cap} picked
+                                {s.max_sector_pct != null ? ` (≤${s.max_sector_pct}% sector cap)` : ' (uncapped)'}
+                                {s.in_current_recipe ? ` · ${s.in_current_recipe} already held in recipe` : ''}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                        {(applyResult.skipped || []).length > 0 ? (
+                          <div className="space-y-0.5">
+                            <div className="text-xs font-medium text-amber-200/90">
+                              Skipped {applyResult.skipped_count ?? applyResult.skipped?.length} — why
+                            </div>
+                            <ul className="text-xs text-muted-foreground max-h-28 overflow-auto space-y-0.5">
+                              {(applyResult.skipped || []).slice(0, 15).map((s) => (
+                                <li key={`${s.symbol}-${s.kind}`}>
+                                  <span className="font-mono text-primary">{s.symbol}</span> — {s.reason}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {(applyResult.notes || []).map((n) => (
+                          <p key={n} className="text-xs text-amber-200/90">
+                            {n}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
+                </CardContent>
+              </Card>
+
+              <RecipeHintsPanel
+                hints={hints}
+                loading={hintsLoading}
+                applying={applyLoading}
+                onRefresh={() => refreshHints()}
+                onApply={(t) => applyScanToRecipe(t)}
+              />
+
+              <Dialog open={executeConfirmOpen} onOpenChange={setExecuteConfirmOpen}>
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>Enable execute_trades for next cron?</DialogTitle>
+                    <DialogDescription>
+                      This sets recipe execute_trades=true. Cron will still force false unless env
+                      SWARM_CRON_EXECUTE_TRADES is truthy (dual gate). Paper-only — never live.
+                      {opsStatus?.cron_execute_env_allows
+                        ? ' Env currently ALLOWS execute.'
+                        : ' Env currently BLOCKS execute (safe).'}
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter className="gap-2 sm:gap-0">
+                    <Button variant="outline" onClick={() => setExecuteConfirmOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button
+                      className="bg-amber-600 hover:bg-amber-500 text-white"
+                      disabled={recipeSaving}
+                      onClick={() => saveRecipe({ execute_trades: true })}
+                    >
+                      Confirm enable
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
+              {run && (
+                <Card className="overflow-hidden">
+                  <CardHeader className="pb-3 border-b border-ramp-grey-800/80 bg-ramp-grey-800/20">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <CardTitle className="text-base">Swarm research results</CardTitle>
+                        <CardDescription className="font-mono text-xs mt-1">{run.run_id}</CardDescription>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className="capitalize">
+                          {(run.instrument || run.summary?.instrument || instrument) as string}
+                        </Badge>
+                        <Badge variant="outline" className="capitalize">
+                          {run.mode || mode}
+                        </Badge>
+                        <Badge
+                          variant={
+                            run.status === 'complete'
+                              ? 'success'
+                              : run.status === 'error' || run.status === 'fail_closed'
+                                ? 'destructive'
+                                : 'warning'
+                          }
+                        >
+                          {run.status}
+                        </Badge>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-5 pt-5">
+                    {run.error && (
+                      <div className="text-sm text-red-300 whitespace-pre-wrap rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2">
+                        {run.error}
+                      </div>
+                    )}
+                    {run.summary?.execute_blocked_reason && (
+                      <div className="text-sm text-amber-200 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                        {run.summary.execute_blocked_reason}
+                      </div>
+                    )}
+
+                    {convictionDigest && (
+                      <div className="rounded-lg border px-3 py-3 space-y-2">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Conviction digest (from agent signals)
+                        </div>
+                        <div className="flex flex-wrap gap-2 text-xs">
+                          <Badge variant="success">
+                            consensus {(convictionDigest.consensus || []).length}
+                          </Badge>
+                          <Badge variant="warning">
+                            contested {(convictionDigest.contested || []).length}
+                          </Badge>
+                          <Badge variant="destructive">
+                            risk-rejected {(convictionDigest.risk_rejected || []).length}
+                          </Badge>
+                        </div>
+                        <ul className="text-xs font-mono space-y-0.5 max-h-36 overflow-auto">
+                          {(convictionDigest.consensus || []).map((c) => (
+                            <li key={`rc-${c.ticker}`}>
+                              ✓ {c.ticker} agree {c.direction} ({c.agree}/{c.total})
+                            </li>
+                          ))}
+                          {(convictionDigest.contested || []).map((c) => (
+                            <li key={`rx-${c.ticker}`}>
+                              ? {c.ticker} bull {c.bullish} / bear {c.bearish} / neu {c.neutral}
+                            </li>
+                          ))}
+                          {(convictionDigest.risk_rejected || []).map((c) => (
+                            <li key={`rr-${c.ticker}`}>⛔ {c.ticker} — {c.reason}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {Object.keys(actionCounts).length > 0 && (
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                        {(['buy', 'sell', 'short', 'cover', 'hold'] as const).map((k) => (
+                          <div key={k} className={cn('rounded-lg border px-3 py-2 text-center', actionTone(k))}>
+                            <div className="text-[10px] uppercase tracking-wide opacity-80">{k}</div>
+                            <div className="text-lg font-semibold tabular-nums">{actionCounts[k] ?? 0}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {decisions.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Decisions
+                        </div>
+                        <div className="grid gap-2">
+                          {decisions.map((d) => {
+                            const open = expanded.has(d.ticker);
+                            const agentInst = d.agent_instrument;
+                            const effective = d.instrument || run.summary?.instrument || instrument;
+                            const override =
+                              agentInst && effective && agentInst !== effective
+                                ? `agent: ${agentInst} → you: ${effective}`
+                                : agentInst
+                                  ? `agent: ${agentInst}`
+                                  : null;
+                            return (
+                              <div
+                                key={d.ticker}
+                                className="rounded-xl border bg-ramp-grey-800/20 overflow-hidden"
+                              >
+                                <button
+                                  type="button"
+                                  className="w-full flex flex-wrap items-center gap-3 p-3 text-left hover:bg-ramp-grey-800/40"
+                                  onClick={() =>
+                                    setExpanded((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(d.ticker)) next.delete(d.ticker);
+                                      else next.add(d.ticker);
+                                      return next;
+                                    })
+                                  }
+                                >
+                                  {open ? (
+                                    <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+                                  ) : (
+                                    <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                                  )}
+                                  <span className="font-semibold tracking-tight min-w-[64px]">{d.ticker}</span>
+                                  <span
+                                    className={cn(
+                                      'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium uppercase',
+                                      actionTone(d.action)
+                                    )}
+                                  >
+                                    {d.action}
+                                  </span>
+                                  <span className="text-xs text-muted-foreground">qty {d.quantity ?? '—'}</span>
+                                  <div className="flex-1 min-w-[120px]">
+                                    <ConfidenceBar value={d.confidence} />
+                                  </div>
+                                  {override && (
+                                    <Badge variant="outline" className="text-[10px] font-normal">
+                                      {override}
+                                    </Badge>
+                                  )}
+                                </button>
+                                {open && (
+                                  <div className="px-4 pb-3 pt-0 border-t border-ramp-grey-800/80">
+                                    <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed pt-3">
+                                      {d.reasoning || 'No reasoning provided.'}
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {tradeResults.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Trade results
+                        </div>
+                        <div className="overflow-x-auto rounded-md border">
+                          <table className="w-full text-sm">
+                            <thead className="bg-ramp-grey-800/50 text-left text-xs text-muted-foreground">
+                              <tr>
+                                <th className="p-2">Ticker</th>
+                                <th className="p-2">Action</th>
+                                <th className="p-2">Qty</th>
+                                <th className="p-2">Status</th>
+                                <th className="p-2">Note</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tradeResults.map((tr, i) => (
+                                <tr key={i} className="border-t border-ramp-grey-800">
+                                  <td className="p-2 font-medium">{String(tr.ticker ?? '—')}</td>
+                                  <td className="p-2 uppercase text-xs">{String(tr.action ?? '—')}</td>
+                                  <td className="p-2 tabular-nums">{String(tr.qty ?? tr.quantity ?? '—')}</td>
+                                  <td className="p-2">
+                                    <Badge
+                                      variant={tr.success ? 'success' : 'destructive'}
+                                      className="text-[10px]"
+                                    >
+                                      {String(tr.status ?? (tr.success ? 'ok' : 'failed'))}
+                                    </Badge>
+                                  </td>
+                                  <td className="p-2 text-xs text-muted-foreground truncate max-w-xs">
+                                    {String(tr.reason ?? '')}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {!run.error && decisions.length === 0 && !TERMINAL.has(run.status) && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground py-6 justify-center">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Agents analyzing… this can take a few minutes.
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
+
+            <TabsContent value="book" className="space-y-5 mt-4">
+              <PortfolioBook
+                portfolio={portfolio}
+                orders={orders}
+                ordersMsg={ordersMsg}
+                loading={portfolioLoading}
+                closing={closing}
+                selectedPositions={selectedPositions}
+                onToggleSelected={(symbol) =>
+                  setSelectedPositions((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(symbol)) next.delete(symbol);
+                    else next.add(symbol);
+                    return next;
+                  })
+                }
+                onSelectAll={(checked) =>
+                  setSelectedPositions(checked ? new Set(positions.map((p) => p.symbol)) : new Set())
+                }
+                onRefresh={() => refreshPortfolio()}
+                onClose={openCloseSheet}
+              />
+
+              <BookRecords
+                runs={bookRuns}
+                opsStatus={opsStatus}
+                opsLoading={opsLoading}
+                onRefresh={() => refreshOps()}
+                onViewRun={(h) => {
+                  void viewHistoryRun(h);
+                  setPane('run');
+                }}
+              />
+            </TabsContent>
+          </Tabs>
         </div>
 
         {showSticky && run && (

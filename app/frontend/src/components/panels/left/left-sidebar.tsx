@@ -78,6 +78,16 @@ export function LeftSidebar({
           <Sparkles size={14} />
           Strategies (paper)
         </Button>
+        <p className="text-[10px] text-muted-foreground mt-1 px-0.5">
+          Run + Book — the everyday paper surface
+        </p>
+      </div>
+
+      <div className="px-3 pt-2 pb-0.5 flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          Advanced — Flows
+        </span>
+        <span className="h-px flex-1 bg-ramp-grey-800" />
       </div>
 
       <FlowActions
