@@ -30,6 +30,7 @@ from app.backend.services.paper_run_service import (
 from app.backend.services.run_history_store import list_history, read_run
 from app.backend.services.performance_snapshot_service import (
     compute_alpha_vs_spy,
+    list_recent_snapshots,
     load_snapshots,
     read_latest_snapshot,
 )
@@ -690,3 +691,34 @@ async def portfolio_performance():
             paper=True,
             message=f"Could not load performance ({type(e).__name__})",
         )
+
+
+@router.get("/portfolio/performance/snapshots")
+async def portfolio_performance_snapshots(limit: int = Query(default=30, ge=1, le=90)):
+    """E2 — recent performance snapshots for the perf strip's Details drawer.
+
+    Every field is a pass-through of a real snapshot write; never invents
+    equity/alpha for missing days. Paper-only.
+    """
+    if alpaca_trading_mode() == "live":
+        return {
+            "available": False,
+            "paper": False,
+            "message": "Performance snapshots are paper-only (ALPACA_TRADING_MODE=live refused)",
+            "snapshots": [],
+        }
+    try:
+        snapshots = list_recent_snapshots(limit=limit)
+        return {
+            "available": True,
+            "paper": True,
+            "count": len(snapshots),
+            "snapshots": snapshots,
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "paper": True,
+            "message": f"Could not load snapshots ({type(e).__name__})",
+            "snapshots": [],
+        }

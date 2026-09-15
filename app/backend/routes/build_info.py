@@ -60,5 +60,11 @@ async def build_info():
             "risk-policy-glance",
             "sector-aware-apply",
             "conviction-recipe-hints",
+            "dry-run-streak-checklist",
+            "perf-snapshot-details",
+            "session-digest-center",
+            "mode-auto-resolver",
+            "empty-book-redeploy-assist",
+            "autoresearch-review-queue",
         ],
     }

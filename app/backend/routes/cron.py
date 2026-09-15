@@ -34,6 +34,7 @@ from app.backend.services.paper_run_service import (
     has_alpaca_keys,
     start_paper_run_async,
 )
+from app.backend.services.dry_run_streak_service import record_weekday_dry_run_event
 from app.backend.services.performance_snapshot_service import take_performance_snapshot
 from app.backend.services.portfolio_monitor_service import (
     monitor_dry_run_env_default,
@@ -347,6 +348,11 @@ async def cron_portfolio_monitor(body: Optional[CronPortfolioMonitorRequest] = N
             write_last_monitor(err)
         except Exception:
             pass
+        try:
+            # E1 — an unexpected error resets the weekday dry-run streak.
+            record_weekday_dry_run_event(dry_run=dry_run, had_error=True)
+        except Exception:
+            pass
         raise HTTPException(
             status_code=500,
             detail=f"Monitor failed ({type(e).__name__})",
@@ -356,6 +362,12 @@ async def cron_portfolio_monitor(body: Optional[CronPortfolioMonitorRequest] = N
         write_last_monitor(result)
     except Exception as e:
         logger.warning("Could not persist monitor status (%s)", type(e).__name__)
+
+    try:
+        # E1 — a normal would-fire action is not an error; only exceptions reset the streak.
+        record_weekday_dry_run_event(dry_run=dry_run, had_error=False, monitor_result=result)
+    except Exception as e:
+        logger.warning("Could not update dry-run streak (%s)", type(e).__name__)
 
     return result
 
