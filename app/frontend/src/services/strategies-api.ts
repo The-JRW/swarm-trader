@@ -21,6 +21,21 @@ export interface StrategiesListResponse {
   alpaca_trading_mode: string;
 }
 
+/** E4 — mode auto-resolver lite: last persisted VIX/gap/calendar resolution. */
+export interface ModeAutoResolution {
+  active: 'override' | 'explicit' | 'auto';
+  resolved_mode: string;
+  reason: string;
+  matched_rule?: string;
+  override?: string | null;
+  computed_at?: string;
+  signals?: {
+    vix?: number | null;
+    gap_pct?: number | null;
+    event_day?: boolean;
+  } | null;
+}
+
 export interface TradingModeResponse {
   mode: string;
   resolved_mode: string;
@@ -32,6 +47,7 @@ export interface TradingModeResponse {
   updated_by?: string | null;
   alpaca_trading_mode: string;
   paper_only: boolean;
+  auto_resolution?: ModeAutoResolution | null;
 }
 
 export interface PaperRunCreateResponse {
@@ -422,6 +438,151 @@ export interface AutomationOpsStatus {
   paths?: Record<string, string> | null;
 }
 
+/** E1 — weekday dry-run streak + exit checklist (display/record only). */
+export interface DryRunWouldFireSummary {
+  timestamp?: string;
+  dry_run?: boolean;
+  trading_mode?: string | null;
+  positions_checked?: number | null;
+  would_fire_count?: number;
+  would_fire?: Array<{ symbol?: string | null; stop_type?: string | null; reason?: string | null }>;
+  warnings_count?: number;
+}
+
+export interface DryRunStreak {
+  consecutive_weekday_count: number;
+  target: number;
+  streak_met: boolean;
+  last_date?: string | null;
+  last_weekday_label?: string | null;
+  last_result?: string | null;
+  summaries: DryRunWouldFireSummary[];
+  ack: {
+    acknowledged: boolean;
+    by?: string | null;
+    note?: string | null;
+    at?: string | null;
+  };
+  ready_to_flip: boolean;
+  updated_at?: string | null;
+  note?: string;
+}
+
+/** E2 — one real performance snapshot row for the Details drawer. */
+export interface PerformanceSnapshotRow {
+  date?: string | null;
+  timestamp?: string | null;
+  equity?: number | null;
+  cash?: number | null;
+  position_count?: number | null;
+  daily_pnl?: number | null;
+  daily_pnl_pct?: number | null;
+  spy_price?: number | null;
+  spy_daily_pct?: number | null;
+  alpha_vs_spy_daily?: number | null;
+}
+
+export interface PerformanceSnapshotsResponse {
+  available: boolean;
+  paper: boolean;
+  count?: number;
+  snapshots: PerformanceSnapshotRow[];
+  message?: string | null;
+}
+
+/** E3 — session digest from real run fields only (no invented scores). */
+export interface SessionDigest {
+  run_id: string;
+  timestamp?: string;
+  mode?: string | null;
+  instrument?: string | null;
+  tickers?: string[];
+  ticker_count?: number;
+  analyst_count?: number | null;
+  action_counts?: Record<string, number>;
+  decision_count?: number;
+  conviction?: {
+    consensus_count?: number;
+    contested_count?: number;
+    risk_rejected_count?: number;
+  };
+  executed_trades?: boolean;
+  execute_blocked_reason?: string | null;
+  trade_results?: { filled: number; blocked: number; other: number; total: number };
+  mode_auto_resolution_reason?: string | null;
+  source?: string;
+  paper?: boolean;
+}
+
+export interface SessionDigestsResponse {
+  paper_only: boolean;
+  limit: number;
+  digests: SessionDigest[];
+  note?: string;
+}
+
+/** E5 — empty-book redeploy suggestion (display-only; execute stays dual-gated). */
+export interface RedeploySuggestion {
+  available: boolean;
+  paper: boolean;
+  suggest?: boolean;
+  positions_count?: number | null;
+  cash?: number | null;
+  threshold?: number;
+  message?: string | null;
+  execute_dual_gated?: boolean;
+}
+
+/** E6 — AutoResearch review queue (stub); approve/reject is display/UX only. */
+export interface AutoResearchReview {
+  decision: 'approved' | 'rejected';
+  by?: string | null;
+  note?: string | null;
+  at?: string | null;
+  applied?: boolean;
+}
+
+export interface AutoResearchExperiment {
+  experiment_id: string;
+  timestamp?: string;
+  iteration?: number;
+  mode?: string | null;
+  hypothesis?: string | null;
+  fitness_score?: number | null;
+  kept?: boolean;
+  error?: string | null;
+  metrics?: Record<string, number | null>;
+  diff_preview?: string | null;
+  review?: AutoResearchReview | null;
+}
+
+export interface AutoResearchRun {
+  run_id: string;
+  timestamp_start?: string;
+  timestamp_end?: string;
+  mode?: string | null;
+  iterations_requested?: number;
+  iterations_completed?: number;
+  stop_reason?: string | null;
+  baseline_fitness?: number | null;
+  best_fitness?: number | null;
+  improvement?: number | null;
+  keep_count?: number;
+  total_experiments?: number;
+  error_count?: number;
+  top_hypothesis?: string | null;
+}
+
+export interface AutoResearchQueueResponse {
+  paper_only: boolean;
+  read_only_source: boolean;
+  limit: number;
+  experiments: AutoResearchExperiment[];
+  recent_runs: AutoResearchRun[];
+  note?: string;
+  source_files?: string[];
+}
+
 async function parseError(response: Response): Promise<string> {
   try {
     const data = await response.json();
@@ -649,6 +810,98 @@ export const strategiesApi = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || { execute_trades: false }),
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** E1 — weekday dry-run streak + last would-fire summaries (record only). */
+  getDryRunStreak: async (): Promise<DryRunStreak> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/dry-run-streak`);
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** E1 — record a James/Reviewer ack. Never flips SWARM_MONITOR_DRY_RUN. */
+  ackDryRunStreak: async (by?: string, note?: string): Promise<DryRunStreak> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/dry-run-streak/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ by, note }),
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  clearDryRunAck: async (): Promise<DryRunStreak> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/dry-run-streak/clear-ack`, {
+      method: 'POST',
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** E2 — recent real performance snapshots for the perf strip's Details drawer. */
+  getPerformanceSnapshots: async (limit = 30): Promise<PerformanceSnapshotsResponse> => {
+    const response = await fetch(
+      `${getApiBaseUrl()}/portfolio/performance/snapshots?limit=${encodeURIComponent(String(limit))}`
+    );
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** E3 — durable session digests built from real run fields only. */
+  getSessionDigests: async (limit = 10): Promise<SessionDigestsResponse> => {
+    const response = await fetch(
+      `${getApiBaseUrl()}/automation/session-digests?limit=${encodeURIComponent(String(limit))}`
+    );
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** E4 — cached mode auto-resolution (cheap; last computed VIX/gap/calendar reason). */
+  getModeResolution: async (): Promise<ModeAutoResolution> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/mode-resolution`);
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** E4 — force a fresh resolution. Human override still wins server-side. */
+  refreshModeResolution: async (): Promise<ModeAutoResolution> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/mode-resolution/refresh`, {
+      method: 'POST',
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** E5 — empty-book redeploy suggestion; display-only, execute stays dual-gated. */
+  getRedeploySuggestion: async (): Promise<RedeploySuggestion> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/redeploy-suggestion`);
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** E6 — AutoResearch review queue (read-only view over evolve.py's own logs). */
+  getAutoResearchQueue: async (limit = 20): Promise<AutoResearchQueueResponse> => {
+    const response = await fetch(
+      `${getApiBaseUrl()}/automation/autoresearch/queue?limit=${encodeURIComponent(String(limit))}`
+    );
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** E6 — display/UX-only approve/reject; never writes strategy.py or config. */
+  reviewAutoResearchExperiment: async (
+    experimentId: string,
+    decision: 'approved' | 'rejected' | 'pending',
+    by?: string,
+    note?: string
+  ): Promise<{ experiment_id: string; review: AutoResearchReview | null }> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/autoresearch/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ experiment_id: experimentId, decision, by, note }),
     });
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();

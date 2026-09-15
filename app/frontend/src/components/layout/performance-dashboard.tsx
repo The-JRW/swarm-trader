@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import { PerformanceSnapshotsDrawer } from '@/components/layout/performance-snapshots-drawer';
 import { cn } from '@/lib/utils';
 import {
   PeriodPerformanceMetric,
@@ -87,6 +88,7 @@ export function PerformanceDashboard({ className }: { className?: string }) {
   const [data, setData] = useState<PortfolioPerformance | null>(null);
   const [loading, setLoading] = useState(true);
   const [clientAsOf, setClientAsOf] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -190,16 +192,18 @@ export function PerformanceDashboard({ className }: { className?: string }) {
 
       <button
         type="button"
-        className="text-[10px] text-muted-foreground/60 px-1 shrink-0 cursor-default"
+        className="text-[10px] text-muted-foreground/60 hover:text-foreground px-1 shrink-0 underline-offset-2 hover:underline"
         title={
           data?.spy_alpha != null
             ? `α vs SPY from real snapshots: ${data.spy_alpha}`
             : 'α vs SPY shown only when real snapshot/benchmark data exists'
         }
-        disabled
+        onClick={() => setDetailsOpen(true)}
       >
         Details
       </button>
+
+      <PerformanceSnapshotsDrawer open={detailsOpen} onOpenChange={setDetailsOpen} />
 
       <Button
         variant="ghost"
