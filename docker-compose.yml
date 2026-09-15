@@ -35,6 +35,10 @@ services:
       SWARM_HIT_EXECUTE: ${SWARM_HIT_EXECUTE:-false}
       SWARM_HIT_COST_GATE_BPS: ${SWARM_HIT_COST_GATE_BPS:-15}
       SWARM_HIT_TURNOVER_BUDGET_PCT: ${SWARM_HIT_TURNOVER_BUDGET_PCT:-200}
+      # Wave G — latency-max paper HIT (still NOT colocated µs HFT). G3 quote
+      # freshness + optional read-only quote WS; both default safe/off.
+      SWARM_HIT_MAX_QUOTE_AGE_MS: ${SWARM_HIT_MAX_QUOTE_AGE_MS:-5000}
+      SWARM_HIT_QUOTE_WS_ENABLED: ${SWARM_HIT_QUOTE_WS_ENABLED:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://swarm-master-u73408.vm.elestio.app}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
