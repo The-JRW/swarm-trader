@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 ARG GIT_SHA=unknown
-ARG IMAGE_TAG=strategies-ux-11
+ARG IMAGE_TAG=strategies-ux-12
 
 ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \

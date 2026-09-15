@@ -93,4 +93,19 @@ curl -s localhost:8000/trading/mode | jq .
 
 ## Ops / Automation card
 
-Strategies page includes a read-only **Ops / Automation** card fed by `GET /api/automation/status` (no cron secret). Shows last cron paper-run id/status, monitor dry-run env flag, and last monitor actions from `/app/data/automation/`. Cron invoke endpoints remain under `/api/cron/*` and require `X-Swarm-Cron-Secret` — see [AUTOMATION_A1_A2.md](./AUTOMATION_A1_A2.md).
+Strategies page includes a read-only **Ops** card fed by `GET /api/automation/status` (no cron secret). Shows last cron paper-run id/status, monitor dry-run env flag, and last monitor actions from `/app/data/automation/`. Cron invoke endpoints remain under `/api/cron/*` and require `X-Swarm-Cron-Secret` — see [AUTOMATION_A1_A2.md](./AUTOMATION_A1_A2.md).
+
+## Run vs Book panes (Wave D, strategies-ux-12)
+
+Strategies is split into two panes behind one tab bar — full detail in [WAVE_D.md](./WAVE_D.md).
+
+- **Run** (default, the hero): trading mode, instrument, presets + analysts, tickers with the sticky
+  run CTA, **Ops** (cron recipe and swarm scan → apply → launch), the read-only risk policy glance,
+  next-recipe hints, and the run results.
+- **Book**: paper portfolio (positions, close 25/50/75/100%, recent orders), durable run history,
+  last cron paper-run, last monitor actions, last conviction digest.
+- Flow graph chrome is labelled **Advanced**; Strategies stays the easy path.
+
+New read-only endpoints: `GET /api/automation/risk-policy` (hard risk caps, display only) and
+`GET /api/automation/recipe-hints` (display-only next-Apply suggestions). Apply-to-recipe is
+sector-aware and reports skip reasons when sector caps trim tickers.

@@ -7,6 +7,10 @@ Image tag: `strategies-ux-11`. Feature flag: `wave-c-orchestrator` (+ `swarm-sca
 
 Reviewer binding: paper-only; do **not** set `SWARM_MONITOR_DRY_RUN=false` via this path; do **not** flip live trading.
 
+**Wave D update:** apply-to-recipe is now sector-aware (diversify underweight sectors, then fill,
+with skip reasons) and the cron cadence for these endpoints is documented as Scheduler-owned and
+scan-only — see [WAVE_D.md](./WAVE_D.md).
+
 ## Amendments
 
 1. **Mode-universe intersect default ON** for swing (and day OK); toggle allowed on scan request.
