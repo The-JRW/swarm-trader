@@ -34,11 +34,27 @@ trade-off ``fast=True`` (the HIT default) avoids.
 HIT is paper-only and never claims true HFT (no co-location, no queue
 priority, no LOB imbalance modeling) — see docs/WAVE_F_HIT.md and
 docs/WAVE_G_LATENCY_MAX.md.
+
+James t180u (same PR/tag as G2's Ops-visible amendment, strategies-ux-16):
+HIT analysis/flow must be able to cover **hundreds** of tickers, not the
+previous ~10-15 hard ceiling. ``HIT_MAX_TICKERS`` (default 300, env
+``SWARM_HIT_MAX_TICKERS``) replaces the old hardcoded ``15`` clamp in
+``run_hit_pulse``; the *default* request size (``DEFAULT_HIT_TICKER_CAP``,
+still 10) is unchanged so an unspecified/cron pulse stays exactly as fast
+as before — hundreds only happen when a caller (scan-discovered tickers,
+an explicit list, or a large ``top_n``) actually asks for them. Also adds
+an auto-fast safety rail: even an explicit ``fast=False`` (slow path) ask
+is overridden back to fast when the resolved ticker count exceeds
+``HIT_AUTO_FAST_TICKER_THRESHOLD`` (30) — hundreds of tickers must never
+wait on the LLM-heavy ``apex``/``news_sentiment_analyst`` pair, which would
+turn a "latency-max" run into an LLM-call meltdown. See
+docs/WAVE_G_LATENCY_MAX.md's "James t180u" section.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -62,6 +78,19 @@ HIT_SLOW_LLM_ANALYST_IDS: List[str] = [
 
 DEFAULT_HIT_TICKER_CAP = 10
 
+# James t180u — the ceiling a HIT pulse may request/allow, not a default.
+# Alpaca's screener may still return fewer names than requested on a given
+# call (see scan_market.HIT_MAX_TICKERS) — this only raises what this
+# codebase is willing to accept when a caller does ask for hundreds.
+HIT_MAX_TICKERS = int(os.environ.get("SWARM_HIT_MAX_TICKERS", "300"))
+
+# James t180u — safety rail, not a new default: an explicit fast=False (slow
+# path) request is auto-overridden back to fast when the resolved ticker
+# count exceeds this, so hundreds of tickers never wait on apex/
+# news_sentiment_analyst's one-full-LLM-call-per-ticker each. Does not
+# affect fast=True (already the default for any N) or small slow-path runs.
+HIT_AUTO_FAST_TICKER_THRESHOLD = 30
+
 
 def resolve_hit_analyst_ids(fast: bool = True) -> List[str]:
     """G2 — the analyst set for a HIT run.
@@ -79,7 +108,12 @@ def resolve_hit_analyst_ids(fast: bool = True) -> List[str]:
 
 
 def hit_universe_tickers(cap: int = DEFAULT_HIT_TICKER_CAP) -> List[str]:
-    """Liquid mega-cap + SPY/QQQ tickers from ``MODES['hit']['universe']``."""
+    """Liquid tickers from ``MODES['hit']['universe']`` (James t180u — widened
+    to 100+ well-known liquid large-cap names across sectors, plus SPY/QQQ;
+    see ``src/config.py``'s ``hit`` universe comment). ``cap`` may be as
+    large as the full universe size; this is a fallback for when no scan
+    result or explicit ticker list is available — the primary way a HIT run
+    reaches "hundreds" is the market scanner or an explicit ticker list."""
     from src.config import get_mode_config
 
     universe = get_mode_config("hit").get("universe") or {}
@@ -113,6 +147,13 @@ def run_hit_pulse(
     ``resolve_hit_analyst_ids``: fast preset only by default, or fast preset
     + the LLM-heavy ``apex``/``news_sentiment_analyst`` pair when the caller
     explicitly passes ``fast=False``.
+
+    James t180u — ``top_n`` may now request up to ``HIT_MAX_TICKERS`` (300
+    by default) instead of the previous hard 15-ticker ceiling; the
+    *default* (``top_n`` omitted) is still ``DEFAULT_HIT_TICKER_CAP`` (10),
+    unchanged. When the resolved ticker count exceeds
+    ``HIT_AUTO_FAST_TICKER_THRESHOLD`` (30), an explicit ``fast=False`` is
+    auto-overridden back to ``fast=True`` — see module docstring.
     """
     from app.backend.services.automation_store import read_cron_recipe, write_last_paper_run
     from app.backend.services.hit_ops_service import hit_execute_env_allows, resolve_hit_execute
@@ -134,7 +175,10 @@ def run_hit_pulse(
         raise PermissionError("FAIL_CLOSED: HIT pulse refuses ALPACA_TRADING_MODE=live")
 
     recipe = read_cron_recipe()
-    cap = max(1, min(int(top_n or DEFAULT_HIT_TICKER_CAP), 15))
+    # James t180u — ceiling raised from a hardcoded 15 to HIT_MAX_TICKERS
+    # (default 300); the default *size* when top_n is omitted is unchanged
+    # (DEFAULT_HIT_TICKER_CAP, 10).
+    cap = max(1, min(int(top_n or DEFAULT_HIT_TICKER_CAP), HIT_MAX_TICKERS))
     use_tickers = tickers or (
         recipe.get("tickers") if (recipe.get("mode") or "").lower() == "hit" else None
     ) or hit_universe_tickers(cap)
@@ -145,7 +189,15 @@ def run_hit_pulse(
     # Dual gate: request/body true AND SWARM_HIT_EXECUTE truthy.
     do_execute = resolve_hit_execute(execute_requested)
 
-    analyst_ids = resolve_hit_analyst_ids(fast=fast)
+    # James t180u — auto-fast safety rail: hundreds of tickers must never
+    # wait on the LLM-heavy slow pair, even if the caller explicitly asked
+    # for fast=False. Small/medium slow-path requests (<= threshold) are
+    # honored exactly as before — this never touches fast=True.
+    requested_fast = bool(fast)
+    auto_fast_override = (not requested_fast) and len(use_tickers) > HIT_AUTO_FAST_TICKER_THRESHOLD
+    effective_fast = True if auto_fast_override else requested_fast
+
+    analyst_ids = resolve_hit_analyst_ids(fast=effective_fast)
     run_id = create_run_record(
         use_tickers,
         analyst_ids,
@@ -155,13 +207,41 @@ def run_hit_pulse(
     )
     start_paper_run_async(run_id)
 
+    if auto_fast_override:
+        fast_path_note = (
+            f"fast=false was requested but auto-overridden to fast=true — "
+            f"{len(use_tickers)} tickers exceeds the "
+            f"{HIT_AUTO_FAST_TICKER_THRESHOLD}-ticker auto-fast threshold "
+            "(James t180u safety rail: hundreds of tickers never wait on the "
+            "apex + news_sentiment_analyst slow pair). See "
+            "docs/WAVE_G_LATENCY_MAX.md."
+        )
+    elif effective_fast:
+        fast_path_note = (
+            "fast=true (default): technical_analyst/market_regime/autoresearch/"
+            "sentiment_analyst only. fast=false: adds apex + news_sentiment_analyst "
+            "(one full LLM call per ticker each) — the slow path, opt-in only. "
+            "See docs/WAVE_G_LATENCY_MAX.md."
+        )
+    else:
+        fast_path_note = (
+            "fast=false (explicit opt-in): adds apex + news_sentiment_analyst "
+            "(one full LLM call per ticker each) to the fast preset. "
+            "See docs/WAVE_G_LATENCY_MAX.md."
+        )
+
     payload = {
         "run_id": run_id,
         "status": "queued",
         "mode": "hit",
         "tickers": use_tickers,
+        # James t180u — Ops-visible ticker count, so Reviewer/James can see
+        # "hundreds" without counting the tickers array by hand.
+        "ticker_count": len(use_tickers),
         "strategy_ids": analyst_ids,
-        "fast": bool(fast),
+        "fast": bool(effective_fast),
+        "fast_requested": requested_fast,
+        "auto_fast_override": auto_fast_override,
         "execute_trades": do_execute,
         "execute_requested": bool(execute_requested),
         "hit_execute_env_allows": hit_execute_env_allows(),
@@ -172,12 +252,7 @@ def run_hit_pulse(
             "Cadence is Scheduler/cron-owned (e.g. every ~15m during RTH) — this "
             "endpoint does not schedule itself. See docs/WAVE_F_HIT.md."
         ),
-        "fast_path_note": (
-            "fast=true (default): technical_analyst/market_regime/autoresearch/"
-            "sentiment_analyst only. fast=false: adds apex + news_sentiment_analyst "
-            "(one full LLM call per ticker each) — the slow path, opt-in only. "
-            "See docs/WAVE_G_LATENCY_MAX.md."
-        ),
+        "fast_path_note": fast_path_note,
     }
     try:
         write_last_paper_run(payload)
