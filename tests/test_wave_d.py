@@ -266,8 +266,9 @@ def test_build_info_has_wave_d_flags():
 
 
 def test_compose_image_tag_is_strategies_ux_12():
+    """Wave E bumped the shipping tag to strategies-ux-13 — see test_wave_e.py."""
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    assert "strategies-ux-12" in compose
+    assert "strategies-ux-13" in compose
     assert "strategies-ux-11" not in compose
 
 
