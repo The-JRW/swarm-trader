@@ -1,13 +1,22 @@
 > Wave F interim doc for The-JRW/swarm-trader. Cross-links:
 > [STRATEGIES_UI.md](./STRATEGIES_UI.md) · [CONTROL_WAVE_B.md](./CONTROL_WAVE_B.md) ·
 > [WAVE_C_ORCHESTRATOR.md](./WAVE_C_ORCHESTRATOR.md) · [WAVE_D.md](./WAVE_D.md) ·
-> [WAVE_E.md](./WAVE_E.md) · [AUTOMATION_A1_A2.md](./AUTOMATION_A1_A2.md)
+> [WAVE_E.md](./WAVE_E.md) · [AUTOMATION_A1_A2.md](./AUTOMATION_A1_A2.md) ·
+> [WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md)
+>
+> **Wave G follow-up (t178u):** [WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md) pushes this
+> stack as close to colocated µs HFT as a paper/broker-REST system honestly can — which is
+> **not very close** — via a fast analyst path, quote-freshness rejection (+ optional
+> read-only quote WS), and a decision→submit→ack→fill latency observatory. Read that doc's
+> honesty section alongside this one; nothing below about HIT ≠ true HFT changes.
 
 # Wave F (F1–F6) — HIT: High-frequency Intraday Turnover
 
 Paper-only follow-up to Waves A–E for **The-JRW/swarm-trader**. Image tag: `strategies-ux-15`.
 Feature flags: `hit-mode`, `hit-cost-gate`, `hit-pulse-cron`, `hit-ops-strip`,
-`hit-dry-run-streak` (see `GET /build-info`).
+`hit-dry-run-streak` (see `GET /build-info`). Wave G adds `hit-fast-path`,
+`hit-quote-freshness-gate`, `hit-quote-ws-optional`, `hit-latency-observatory` — see
+[WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md).
 
 ## HIT ≠ true HFT — read this first
 
@@ -160,6 +169,11 @@ of sub-second decisioning — every HIT run still goes through the same
 `paper_run_service.execute_paper_run` → `run_hedge_fund` → conviction-digest → risk_manager
 pipeline as every other mode. No bypass of `risk_manager` (no LLM override of hard risk rules).
 
+**Wave G / G2 formalizes and extends this** with a `fast` flag (default `true`, matching this
+preset unchanged) and an explicit, opt-in-only slow path (`apex` + `news_sentiment_analyst`,
+one full LLM call per ticker each) — see
+[WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md#g2--fast-hit-path).
+
 ### F5 — Session HIT Ops strip
 
 `app/backend/services/hit_ops_service.py` persists a small daily counter file
@@ -177,11 +191,17 @@ estimated as if measured. Fill-latency timestamps (`submitted_at` / `filled_at`)
 through only when Alpaca's own order response included them (`src/alpaca_integration.py`'s
 `_place_alpaca_order` does one best-effort follow-up `GET /orders/{id}` when the initial
 response has no `filled_at` yet) — **blank when missing, never fabricated**. There is no
-WebSocket/`trade_updates` client in this codebase (none existed before this wave either); F5
-polls a persisted summary instead of holding a live connection, which also sidesteps Alpaca's
-one-connection-per-account limit on `trade_updates` entirely. The Ops HIT strip card
-(`HitOpsPanel`) never crashes when there is no pulse yet — every field renders a safe blank
-("No HIT pulse yet today.") rather than throwing.
+order/`trade_updates` WebSocket client in this codebase, in this wave or Wave G (see below);
+F5 polls a persisted summary instead of holding a live order-stream connection, which also
+sidesteps Alpaca's one-connection-per-account limit on `trade_updates` entirely. The Ops HIT
+strip card (`HitOpsPanel`) never crashes when there is no pulse yet — every field renders a
+safe blank ("No HIT pulse yet today.") rather than throwing.
+
+**Wave G / G3 adds an *optional*, off-by-default, read-only *market-data* WebSocket** (quotes
+only — still never an order/`trade_updates` stream) with single-connection discipline, and
+**Wave G / G4 extends fill-latency into a decision→submit→ack→fill breakdown**, surfaced in
+this same strip. See [WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md#g3--quote-freshness) and
+[#g4--latency-observatory](./WAVE_G_LATENCY_MAX.md#g4--latency-observatory).
 
 ### F6 — HIT dry-run streak (mirrors A2/E1)
 
@@ -236,7 +256,9 @@ checklist + would-fire/blocked/cost-gate summaries + ack form pattern as A2/E1's
 
 No other env var is added or changed by this wave. `SWARM_MONITOR_DRY_RUN`,
 `SWARM_AUTO_LAUNCH`, `SWARM_CRON_EXECUTE_TRADES`, and `ALPACA_TRADING_MODE` keep their
-Wave A–E defaults (see `CONTROL_WAVE_B.md`, `WAVE_C_ORCHESTRATOR.md`, `WAVE_E.md`).
+Wave A–E defaults (see `CONTROL_WAVE_B.md`, `WAVE_C_ORCHESTRATOR.md`, `WAVE_E.md`). Wave G
+adds two more (`SWARM_HIT_MAX_QUOTE_AGE_MS`, `SWARM_HIT_QUOTE_WS_ENABLED`), both with safe
+defaults — see [WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md#env-new-all-optional-safe-defaults).
 
 ## Smoke
 
@@ -285,3 +307,6 @@ other `hit` risk rail stays exactly as F1 documents.
 ```bash
 poetry run pytest tests/test_wave_f_hit.py -q
 ```
+
+Wave G adds `tests/test_wave_g_latency_max.py` — see
+[WAVE_G_LATENCY_MAX.md](./WAVE_G_LATENCY_MAX.md#tests).
