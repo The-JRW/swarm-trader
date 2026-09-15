@@ -640,6 +640,9 @@ export interface HitLastPulse {
   /** G2 Ops-visible — the actual analyst set this pulse ran, e.g.
    * ["technical_analyst","market_regime","autoresearch","sentiment_analyst"]. */
   analyst_ids?: string[] | null;
+  /** James t180u — how many tickers this pulse actually ran (may be in the
+   * hundreds). Not present on older records. */
+  ticker_count?: number | null;
 }
 
 export interface HitOps {
@@ -666,6 +669,13 @@ export interface HitOps {
   fast_path_analyst_ids?: string[];
   slow_path_analyst_ids?: string[];
   fast_path_note?: string;
+  /** James t180u — Ops-visible HIT universe breadth: hit_universe_size is
+   * the widened static fallback list size (100+ names); hit_max_tickers is
+   * the ceiling a pulse/apply may request (hundreds). Never fabricated —
+   * null when the backend could not compute it. */
+  hit_universe_size?: number | null;
+  hit_max_tickers?: number;
+  hit_scale_note?: string;
 }
 
 /** F6 — HIT dry-run streak (mirrors A2/E1); record/ack only — never flips SWARM_HIT_EXECUTE. */
@@ -702,11 +712,21 @@ export interface HitPulseResponse {
   status: string;
   mode: string;
   tickers: string[];
+  /** James t180u — real count of `tickers` above; may be in the hundreds. */
+  ticker_count?: number;
   strategy_ids: string[];
-  /** G2 — true (default): fast analyst preset only. false: also includes
-   * apex + news_sentiment_analyst (slow path — one full LLM call per ticker
-   * each). See docs/WAVE_G_LATENCY_MAX.md. */
+  /** G2 — effective analyst path used (true: fast preset only; false: also
+   * includes apex + news_sentiment_analyst). James t180u: may differ from
+   * `fast_requested` when `auto_fast_override` is true (hundreds of
+   * tickers auto-override an explicit fast=false back to fast=true). See
+   * docs/WAVE_G_LATENCY_MAX.md. */
   fast?: boolean;
+  /** James t180u — the raw fast value the caller requested, before any
+   * auto-fast-override. */
+  fast_requested?: boolean;
+  /** James t180u — true when ticker_count exceeded the auto-fast threshold
+   * and an explicit fast=false request was overridden back to fast=true. */
+  auto_fast_override?: boolean;
   execute_trades: boolean;
   execute_requested: boolean;
   hit_execute_env_allows?: boolean;

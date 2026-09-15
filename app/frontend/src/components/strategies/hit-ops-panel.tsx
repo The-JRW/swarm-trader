@@ -3,8 +3,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { fmtMoney } from '@/components/strategies/format';
 import { cn } from '@/lib/utils';
-import { HitOps, strategiesApi } from '@/services/strategies-api';
-import { Loader2, PlayCircle, RefreshCw, Timer, Turtle, Zap } from 'lucide-react';
+import { HitOps, HitPulseResponse, strategiesApi } from '@/services/strategies-api';
+import { Loader2, ListChecks, PlayCircle, RefreshCw, Timer, Turtle, Zap } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 /** G2 Ops-visible amendment — fallback fast-preset labels, used only until
@@ -39,6 +39,7 @@ export function HitOpsPanel({ className }: { className?: string }) {
   const [fastSelection, setFastSelection] = useState(true);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [runResult, setRunResult] = useState<HitPulseResponse | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,8 +59,10 @@ export function HitOpsPanel({ className }: { className?: string }) {
   const runPulse = useCallback(async () => {
     setRunning(true);
     setRunError(null);
+    setRunResult(null);
     try {
-      await strategiesApi.runHitPulse({ execute_trades: false, fast: fastSelection });
+      const result = await strategiesApi.runHitPulse({ execute_trades: false, fast: fastSelection });
+      setRunResult(result);
       await load();
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'HIT pulse failed to start');
@@ -107,6 +110,12 @@ export function HitOpsPanel({ className }: { className?: string }) {
               {lastPulseFast ? <Zap className="h-3 w-3" /> : <Turtle className="h-3 w-3" />}
               {lastPulseFast ? 'Fast HIT path' : 'Slow path (opt-in)'}
             </Badge>
+            {ops?.hit_universe_size != null ? (
+              <Badge variant="outline" className="gap-1" title={ops?.hit_scale_note}>
+                <ListChecks className="h-3 w-3" />
+                HIT universe: {ops.hit_universe_size} names
+              </Badge>
+            ) : null}
             <Badge variant={ops?.hit_execute_env_allows ? 'warning' : 'success'}>
               HIT execute env: {ops?.hit_execute_env_allows ? 'allows' : 'blocked (safe)'}
             </Badge>
@@ -149,6 +158,12 @@ export function HitOpsPanel({ className }: { className?: string }) {
                 <p className="text-xs text-muted-foreground">
                   {lastPulse.at ? new Date(lastPulse.at).toLocaleString() : '—'} · run{' '}
                   <span className="font-mono">{(lastPulse.run_id || '').slice(0, 8)}</span> ·{' '}
+                  {lastPulse.ticker_count != null ? (
+                    <>
+                      <span className="font-semibold text-primary">{lastPulse.ticker_count}</span>{' '}
+                      tickers ·{' '}
+                    </>
+                  ) : null}
                   {lastPulse.execute_effective ? 'executed' : 'analysis-only'} · would-fire{' '}
                   {lastPulse.would_fire_count ?? 0} · filled {lastPulse.trades_filled ?? 0} ·
                   cost-gate rejects {lastPulse.cost_gate_rejects ?? 0}
@@ -226,7 +241,17 @@ export function HitOpsPanel({ className }: { className?: string }) {
                   ? `Will run: ${fastAnalysts.join(' + ')}.`
                   : `Will run: ${fastAnalysts.join(' + ')} + ${slowAnalysts.join(' + ')} (slow pair).`}{' '}
                 Always analysis-only from this button — never flips SWARM_HIT_EXECUTE.
+                {ops?.hit_max_tickers ? ` Up to ${ops.hit_max_tickers} tickers may be requested (James t180u).` : ''}
               </p>
+              {runResult ? (
+                <p className="text-[11px] text-emerald-400">
+                  Started run <span className="font-mono">{runResult.run_id.slice(0, 8)}</span> ·{' '}
+                  {runResult.ticker_count ?? runResult.tickers.length} tickers
+                  {runResult.auto_fast_override
+                    ? ' · fast=false auto-overridden to fast=true (ticker count over the auto-fast threshold)'
+                    : ''}
+                </p>
+              ) : null}
               {runError ? <p className="text-[11px] text-red-400">{runError}</p> : null}
             </div>
 
