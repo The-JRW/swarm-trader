@@ -111,11 +111,23 @@ def _fast_path_info() -> Dict[str, Any]:
     """G2 Ops-visible amendment — static fast/slow analyst preset labels, so
     the Ops HIT strip can show "Fast HIT path" copy without a pulse having
     run yet today. Source of truth stays ``hit_service`` — this is a
-    read-only mirror, never a second definition."""
+    read-only mirror, never a second definition.
+
+    James t180u — also mirrors the widened static HIT universe size and the
+    request ceiling, so the same strip can show "HIT universe: N names"
+    without a Reviewer/James needing to count a tickers array by hand.
+    """
     from app.backend.services.hit_service import (
+        HIT_MAX_TICKERS,
         HIT_PRESET_ANALYST_IDS,
         HIT_SLOW_LLM_ANALYST_IDS,
+        hit_universe_tickers,
     )
+
+    try:
+        universe_size = len(hit_universe_tickers(cap=0))
+    except Exception:
+        universe_size = None
 
     return {
         "fast_default": True,
@@ -127,6 +139,18 @@ def _fast_path_info() -> Dict[str, Any]:
             "LLM pair below. Slow path (fast=false, opt-in only): adds apex "
             "+ news_sentiment_analyst (one full LLM call per ticker each). "
             "See docs/WAVE_G_LATENCY_MAX.md."
+        ),
+        # James t180u — Ops-visible universe breadth. hit_universe_size is
+        # the widened static fallback list (config.py's MODES["hit"]
+        # universe); hit_max_tickers is the ceiling a pulse/apply may
+        # request — both real numbers, never fabricated.
+        "hit_universe_size": universe_size,
+        "hit_max_tickers": HIT_MAX_TICKERS,
+        "hit_scale_note": (
+            "James t180u: HIT analysis/flow targets hundreds of tickers, not "
+            "~10-15. This is a request/allow ceiling, not a guarantee — "
+            "Alpaca's screener may return fewer than requested on a given "
+            "call. See docs/WAVE_G_LATENCY_MAX.md."
         ),
     }
 
