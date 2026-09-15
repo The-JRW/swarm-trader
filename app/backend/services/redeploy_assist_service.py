@@ -74,7 +74,7 @@ def get_redeploy_suggestion(threshold: Optional[float] = None) -> Dict[str, Any]
         from src.config import resolve_mode
 
         mode = resolve_mode()
-        if mode == "auto" or mode not in ("swing", "day"):
+        if mode == "auto" or mode not in ("swing", "day", "hit"):
             mode = "swing"
 
         if not accounts_mod.get_all_accounts():

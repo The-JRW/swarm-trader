@@ -583,6 +583,100 @@ export interface AutoResearchQueueResponse {
   source_files?: string[];
 }
 
+/** F5 — Ops HIT strip. HIT = High-frequency Intraday Turnover (paper), NOT true HFT. */
+export interface HitFillLatency {
+  ticker?: string | null;
+  order_id?: string | null;
+  submitted_at?: string | null;
+  filled_at?: string | null;
+  latency_ms?: number | null;
+}
+
+export interface HitCostGateReject {
+  ticker?: string | null;
+  action?: string | null;
+  qty?: number | null;
+  notional?: number | null;
+  half_spread_bps?: number | null;
+  round_trip_cost_bps?: number | null;
+  cost_budget_bps?: number | null;
+  quote_source?: string | null;
+  reason?: string | null;
+  rule?: string | null;
+}
+
+export interface HitLastPulse {
+  run_id?: string | null;
+  at?: string | null;
+  execute_requested?: boolean;
+  execute_effective?: boolean;
+  trades_filled?: number;
+  cost_gate_rejects?: number;
+  turnover_added?: number;
+  would_fire_count?: number;
+}
+
+export interface HitOps {
+  date?: string;
+  trades_today: number;
+  turnover_today: number;
+  cost_gate_rejects_today: number;
+  would_fire_today?: number;
+  pulses_today?: number;
+  last_pulse: HitLastPulse | null;
+  recent_fill_latencies: HitFillLatency[];
+  recent_cost_gate_rejects: HitCostGateReject[];
+  note?: string;
+  updated_at?: string | null;
+  paper_only?: boolean;
+  hit_execute_env_allows?: boolean;
+  not_true_hft?: boolean;
+}
+
+/** F6 — HIT dry-run streak (mirrors A2/E1); record/ack only — never flips SWARM_HIT_EXECUTE. */
+export interface HitDryRunSummary {
+  timestamp?: string;
+  mode?: string | null;
+  would_fire_count?: number;
+  risk_blocked_count?: number;
+  cost_gate_reject_count?: number;
+  executed_trades?: boolean;
+}
+
+export interface HitDryRunStreak {
+  consecutive_weekday_count: number;
+  target: number;
+  streak_met: boolean;
+  last_date?: string | null;
+  last_weekday_label?: string | null;
+  last_result?: string | null;
+  summaries: HitDryRunSummary[];
+  ack: {
+    acknowledged: boolean;
+    by?: string | null;
+    note?: string | null;
+    at?: string | null;
+  };
+  ready_to_flip: boolean;
+  updated_at?: string | null;
+  note?: string;
+}
+
+export interface HitPulseResponse {
+  run_id: string;
+  status: string;
+  mode: string;
+  tickers: string[];
+  strategy_ids: string[];
+  execute_trades: boolean;
+  execute_requested: boolean;
+  hit_execute_env_allows?: boolean;
+  paper: boolean;
+  paper_only: boolean;
+  message?: string;
+  cadence_note?: string;
+}
+
 async function parseError(response: Response): Promise<string> {
   try {
     const data = await response.json();
@@ -896,12 +990,60 @@ export const strategiesApi = {
     experimentId: string,
     decision: 'approved' | 'rejected' | 'pending',
     by?: string,
-    note?: string
+    note?: string,
   ): Promise<{ experiment_id: string; review: AutoResearchReview | null }> => {
     const response = await fetch(`${getApiBaseUrl()}/automation/autoresearch/review`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ experiment_id: experimentId, decision, by, note }),
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** F5 — Ops HIT strip (trades today, turnover, cost-gate rejects, last pulse). */
+  getHitOps: async (): Promise<HitOps> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/hit/ops`);
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** F3 — UI-facing HIT pulse trigger. Analysis-only unless SWARM_HIT_EXECUTE ∧ requested. */
+  runHitPulse: async (body?: {
+    tickers?: string[];
+    execute_trades?: boolean;
+    top_n?: number;
+  }): Promise<HitPulseResponse> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/hit/pulse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || { execute_trades: false }),
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** F6 — weekday HIT streak + last would-fire/blocked/cost-gate summaries (record only). */
+  getHitDryRunStreak: async (): Promise<HitDryRunStreak> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/hit-dry-run-streak`);
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  /** F6 — record a James/Reviewer ack. Never flips SWARM_HIT_EXECUTE. */
+  ackHitDryRunStreak: async (by?: string, note?: string): Promise<HitDryRunStreak> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/hit-dry-run-streak/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ by, note }),
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    return response.json();
+  },
+
+  clearHitDryRunAck: async (): Promise<HitDryRunStreak> => {
+    const response = await fetch(`${getApiBaseUrl()}/automation/hit-dry-run-streak/clear-ack`, {
+      method: 'POST',
     });
     if (!response.ok) throw new Error(await parseError(response));
     return response.json();

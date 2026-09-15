@@ -21,6 +21,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { AutoResearchReviewPanel } from '@/components/strategies/autoresearch-review-panel';
 import { BookRecords } from '@/components/strategies/book-records';
 import { DryRunStreakPanel } from '@/components/strategies/dry-run-streak-panel';
+import { HitDryRunStreakPanel } from '@/components/strategies/hit-dry-run-streak-panel';
+import { HitOpsPanel } from '@/components/strategies/hit-ops-panel';
 import { actionTone } from '@/components/strategies/format';
 import { PortfolioBook } from '@/components/strategies/portfolio-book';
 import { RecipeHintsPanel } from '@/components/strategies/recipe-hints-panel';
@@ -61,9 +63,9 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
-type TradingModeChoice = 'swing' | 'day' | 'auto';
+type TradingModeChoice = 'swing' | 'day' | 'hit' | 'auto';
 type InstrumentChoice = 'stocks' | 'options';
-type PresetId = 'core' | 'value' | 'growth' | 'quant' | 'custom';
+type PresetId = 'core' | 'value' | 'growth' | 'quant' | 'hit' | 'custom';
 
 const TERMINAL = new Set(['complete', 'error', 'fail_closed']);
 const CLOSE_PRESETS = [25, 50, 75, 100] as const;
@@ -104,6 +106,8 @@ const PRESET_ANALYST_IDS: Record<Exclude<PresetId, 'custom'>, string[]> = {
     'sentiment_analyst',
     'news_sentiment_analyst',
   ],
+  /** F4 — HIT preset: deterministic/fast signals ahead of heavier LLM research. */
+  hit: ['technical_analyst', 'market_regime', 'autoresearch', 'sentiment_analyst'],
 };
 
 interface SessionRunHistoryItem {
@@ -380,9 +384,9 @@ export function StrategiesPage() {
         setRecipe(r);
         setRecipeTickers((r.tickers || []).join(', '));
         const p = (r.preset || 'core') as PresetId;
-        if (['core', 'value', 'growth', 'quant', 'custom'].includes(p)) setRecipePreset(p);
+        if (['core', 'value', 'growth', 'quant', 'hit', 'custom'].includes(p)) setRecipePreset(p);
         const m = (r.mode || 'swing').toLowerCase();
-        if (m === 'swing' || m === 'day' || m === 'auto') setRecipeMode(m);
+        if (m === 'swing' || m === 'day' || m === 'hit' || m === 'auto') setRecipeMode(m);
       } else if (s.recipe) {
         setRecipe(s.recipe as CronRecipe);
       }
@@ -429,7 +433,7 @@ export function StrategiesPage() {
       setServerKeys(list.server_keys);
       setAlpacaMode(list.alpaca_trading_mode || trading.alpaca_trading_mode || 'paper');
       const m = (trading.mode || 'swing').toLowerCase();
-      if (m === 'swing' || m === 'day' || m === 'auto') setMode(m);
+      if (m === 'swing' || m === 'day' || m === 'hit' || m === 'auto') setMode(m);
       const resolved = (trading.resolved_mode || 'swing').toLowerCase();
       setResolvedMode(resolved === 'day' ? 'day' : 'swing');
       // E4 — prefer the real VIX/gap/calendar auto-resolution reason when present.
@@ -943,7 +947,7 @@ export function StrategiesPage() {
                   </CardHeader>
                   <CardContent className="space-y-3">
                     <div className="flex flex-wrap gap-2">
-                      {(['swing', 'day', 'auto'] as TradingModeChoice[]).map((m) => (
+                      {(['swing', 'day', 'hit', 'auto'] as TradingModeChoice[]).map((m) => (
                         <Button
                           key={m}
                           variant={mode === m ? undefined : 'outline'}
@@ -951,10 +955,17 @@ export function StrategiesPage() {
                           onClick={() => onModeChange(m)}
                           className={cn(mode === m && 'bg-blue-600 hover:bg-blue-500 text-white')}
                         >
-                          {m === 'auto' ? autoLabel : m}
+                          {m === 'auto' ? autoLabel : m === 'hit' ? 'HIT' : m}
                         </Button>
                       ))}
                     </div>
+                    {mode === 'hit' && (
+                      <p className="text-xs text-amber-200/90">
+                        HIT = High-frequency <strong>Intraday Turnover</strong> (paper, minutes-hours
+                        holds) — not true HFT. No co-location, no LOB imbalance modeling. F2 cost gate
+                        is mandatory on any HIT execute.
+                      </p>
+                    )}
                     <label className="flex items-start gap-2 text-xs cursor-pointer">
                       <Checkbox
                         checked={useOverride}
@@ -1064,6 +1075,7 @@ export function StrategiesPage() {
                         ['value', 'Value'],
                         ['growth', 'Growth'],
                         ['quant', 'Quant'],
+                        ['hit', 'HIT'],
                         ['custom', 'Custom'],
                       ] as [PresetId, string][]
                     ).map(([id, label]) => (
@@ -1248,7 +1260,7 @@ export function StrategiesPage() {
                       />
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {(['core', 'value', 'growth', 'quant', 'custom'] as PresetId[]).map((p) => (
+                      {(['core', 'value', 'growth', 'quant', 'hit', 'custom'] as PresetId[]).map((p) => (
                         <Button
                           key={p}
                           size="sm"
@@ -1261,7 +1273,7 @@ export function StrategiesPage() {
                       ))}
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {(['swing', 'day', 'auto'] as TradingModeChoice[]).map((m) => (
+                      {(['swing', 'day', 'hit', 'auto'] as TradingModeChoice[]).map((m) => (
                         <Button
                           key={m}
                           size="sm"
@@ -1773,6 +1785,10 @@ export function StrategiesPage() {
               />
 
               <DryRunStreakPanel />
+
+              <HitOpsPanel />
+
+              <HitDryRunStreakPanel />
 
               <AutoResearchReviewPanel />
             </TabsContent>

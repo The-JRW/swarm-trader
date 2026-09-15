@@ -50,6 +50,13 @@ _PRESET_ANALYST_IDS = {
         "sentiment_analyst",
         "news_sentiment_analyst",
     ],
+    # F4 — HIT preset: deterministic/fast signals ahead of heavier LLM research.
+    "hit": [
+        "technical_analyst",
+        "market_regime",
+        "autoresearch",
+        "sentiment_analyst",
+    ],
 }
 
 
@@ -83,7 +90,7 @@ def _normalize_source_tags(raw_source: str, *, is_core: bool = False) -> List[st
 
 def _normalize_universe_mode(mode: Optional[str]) -> str:
     m = (mode or "swing").strip().lower()
-    if m == "auto" or m not in ("swing", "day"):
+    if m == "auto" or m not in ("swing", "day", "hit"):
         return "swing"
     return m
 
@@ -191,7 +198,7 @@ def run_swarm_scan(
 
     recipe = read_cron_recipe()
     resolved_mode = (mode or recipe.get("mode") or "swing").strip().lower()
-    if resolved_mode not in ("swing", "day", "auto"):
+    if resolved_mode not in ("swing", "day", "hit", "auto"):
         resolved_mode = "swing"
     intersect_mode = "swing" if resolved_mode == "auto" else resolved_mode
 
@@ -576,7 +583,7 @@ def launch_analysis_from_recipe(
 
     recipe = read_cron_recipe()
     mode = (recipe.get("mode") or "swing").strip().lower()
-    if mode not in ("swing", "day", "auto"):
+    if mode not in ("swing", "day", "hit", "auto"):
         mode = "swing"
 
     use_tickers = tickers or recipe.get("tickers") or []

@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-VALID_MODES = ("swing", "day")
+VALID_MODES = ("swing", "day", "hit")
 
 DISPLAY_ONLY_NOTE = (
     "Display only — hard caps are code-enforced in risk_manager.validate_trade. "

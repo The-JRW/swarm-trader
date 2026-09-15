@@ -384,8 +384,11 @@ def main():
         "--mode",
         type=str,
         default="swing",
-        choices=["swing", "day"],
-        help="Data mode: 'swing' (fundamentals+news, default) or 'day' (intraday technicals)",
+        choices=["swing", "day", "hit"],
+        help=(
+            "Data mode: 'swing' (fundamentals+news, default), 'day' (intraday "
+            "technicals), or 'hit' (intraday technicals; HIT — paper, not true HFT)"
+        ),
     )
     args = parser.parse_args()
 
@@ -408,6 +411,12 @@ def main():
             "min_confidence": 55,
             "max_loss_per_day": 0.03,
         } if args.mode == "day" else {
+            # F1 — HIT: smaller per-trade cap, higher turnover, tighter loss limit
+            "max_trade_pct": 0.07,
+            "max_trades_per_run": 50,
+            "min_confidence": 55,
+            "max_loss_per_day": 0.03,
+        } if args.mode == "hit" else {
             "max_trade_pct": 0.10,
             "max_trades_per_run": 8,
             "min_confidence": 60,
@@ -442,8 +451,8 @@ def main():
             if t not in tickers:
                 tickers.append(t)
 
-    # In day mode, always include SPY and QQQ for regime classification
-    if args.mode == "day":
+    # In day/hit mode, always include SPY and QQQ for regime classification
+    if args.mode in ("day", "hit"):
         for anchor in ("SPY", "QQQ"):
             if anchor not in tickers:
                 tickers.append(anchor)
@@ -453,7 +462,7 @@ def main():
     payload["ticker_data"] = {}
     for ticker in tickers:
         print(f"  → {ticker}", file=sys.stderr)
-        if args.mode == "day":
+        if args.mode in ("day", "hit"):
             payload["ticker_data"][ticker] = get_ticker_data_day(ticker, today, prev_date)
         else:
             payload["ticker_data"][ticker] = get_ticker_data_swing(ticker)

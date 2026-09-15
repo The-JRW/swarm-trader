@@ -162,7 +162,7 @@ def take_performance_snapshot(force: bool = False) -> Dict[str, Any]:
         from src.config import resolve_mode
 
         mode = resolve_mode()
-        if mode == "auto" or mode not in ("swing", "day"):
+        if mode == "auto" or mode not in ("swing", "day", "hit"):
             mode = "swing"
         try:
             account = get_alpaca_account(mode)

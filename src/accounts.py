@@ -118,6 +118,14 @@ def get_account_for_mode(mode: str = None) -> AlpacaAccount:
 
     mode = mode.lower()
 
+    # HIT (Wave F) has no dedicated Alpaca account — it trades intraday like
+    # "day", so prefer the day account, falling back to swing.
+    if mode == "hit":
+        if "day" in _ACCOUNTS:
+            return _ACCOUNTS["day"]
+        if "swing" in _ACCOUNTS:
+            return _ACCOUNTS["swing"]
+
     if mode in _ACCOUNTS:
         return _ACCOUNTS[mode]
 

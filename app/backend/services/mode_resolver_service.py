@@ -156,7 +156,7 @@ def compute_and_persist_mode_resolution(force: bool = False) -> Dict[str, Any]:
     if literal_mode != "auto":
         payload = {
             "active": "explicit",
-            "resolved_mode": literal_mode if literal_mode in ("swing", "day") else "swing",
+            "resolved_mode": literal_mode if literal_mode in ("swing", "day", "hit") else "swing",
             "reason": f"Mode explicitly set to '{literal_mode}' (not auto)",
             "override": None,
             "computed_at": _now_iso(),

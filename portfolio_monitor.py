@@ -400,7 +400,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--mode",
-        choices=["swing", "day"],
+        choices=["swing", "day", "hit"],
         default=None,
         help="Trading mode (overrides TRADING_MODE env, default: swing)",
     )

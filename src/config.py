@@ -96,6 +96,46 @@ MODES = {
             "allow_leveraged_etfs": True,   # OK intraday only
         },
     },
+    # ── HIT — High-frequency Intraday Turnover (Wave F) ────────────────────
+    # NOT true HFT: no co-location, no LOB imbalance engine, no maker/taker
+    # rebates. This is a higher-turnover sibling of "day" — smaller per-name
+    # size, more (but still capped) trades/positions, tighter stop, earlier
+    # flatten, higher cash buffer. See docs/WAVE_F_HIT.md. Paper-only.
+    "hit": {
+        "label": "HIT — Intraday Pulse (paper; not true HFT)",
+        "universe": {
+            "mega_cap": {
+                "label": "Mega-Cap Liquid",
+                "tickers": ["NVDA", "AVGO", "TSM", "AMD", "MSFT", "AAPL", "META", "GOOGL", "AMZN"],
+                "max_sector_pct": 0.50,
+                "max_per_stock_pct": 0.08,
+            },
+            "index_anchors": {
+                "label": "Index Anchors",
+                # SPY/QQQ only — no TQQQ/SOXL or other leveraged ETFs by default
+                # (Reviewer amendment: allow_leveraged_etfs=False for hit).
+                "tickers": ["SPY", "QQQ"],
+                "max_sector_pct": 0.30,
+                "max_per_stock_pct": 0.08,
+            },
+        },
+        "risk": {
+            "max_position_pct": 0.07,       # smaller per-name than day (0.15)
+            "max_sector_pct": 0.50,
+            "stop_loss_pct": 0.009,         # tighter than day's -1.2%
+            "trailing_stop_pct": 0.02,      # tighter trailing than day's 3%
+            "daily_loss_limit": 0.03,       # same circuit breaker as day
+            "weekly_loss_limit": 0.08,
+            "no_buy_if_down_pct": 0.02,
+            "max_trades_per_day": 50,       # higher turnover than day (20)
+            "max_open_positions": 13,       # more, smaller positions than day (8)
+            "min_cash_pct": 0.15,           # higher cash buffer than day (0.10)
+            "max_tactical_pct": 1.0,        # no tactical bucket in hit universe
+            "flatten_eod": True,
+            "flatten_by": "15:30",          # earlier than day's 15:45
+            "allow_leveraged_etfs": False,  # Reviewer amendment — no TQQQ/SOXL by default
+        },
+    },
 }
 
 

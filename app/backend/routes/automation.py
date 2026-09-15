@@ -32,6 +32,12 @@ from app.backend.services.dry_run_streak_service import (
     read_dry_run_streak,
     record_ack as record_dry_run_ack,
 )
+from app.backend.services.hit_dry_run_streak_service import (
+    clear_ack as clear_hit_streak_ack,
+    read_hit_dry_run_streak,
+    record_ack as record_hit_streak_ack,
+)
+from app.backend.services.hit_ops_service import hit_execute_env_allows, read_hit_ops
 from app.backend.services.mode_resolver_service import (
     compute_and_persist_mode_resolution,
     read_last_mode_resolution,
@@ -123,13 +129,13 @@ async def put_automation_recipe(body: CronRecipeBody):
         patch["tickers"] = body.tickers
     if body.preset is not None:
         preset = body.preset.strip().lower()
-        if preset not in ("core", "value", "growth", "quant", "custom"):
-            raise HTTPException(status_code=400, detail="preset must be core|value|growth|quant|custom")
+        if preset not in ("core", "value", "growth", "quant", "hit", "custom"):
+            raise HTTPException(status_code=400, detail="preset must be core|value|growth|quant|hit|custom")
         patch["preset"] = preset
     if body.mode is not None:
         mode = body.mode.strip().lower()
-        if mode not in ("swing", "day", "auto"):
-            raise HTTPException(status_code=400, detail="mode must be swing|day|auto")
+        if mode not in ("swing", "day", "hit", "auto"):
+            raise HTTPException(status_code=400, detail="mode must be swing|day|hit|auto")
         patch["mode"] = mode
     if body.execute_trades is not None:
         patch["execute_trades"] = bool(body.execute_trades)
@@ -210,8 +216,8 @@ async def automation_swarm_scan(body: Optional[SwarmScanRequest] = None):
     mode = body.mode
     if mode is not None:
         mode = mode.strip().lower()
-        if mode not in ("swing", "day", "auto"):
-            raise HTTPException(status_code=400, detail="mode must be swing|day|auto")
+        if mode not in ("swing", "day", "hit", "auto"):
+            raise HTTPException(status_code=400, detail="mode must be swing|day|hit|auto")
     try:
         result = run_swarm_scan(
             mode=mode,
@@ -240,8 +246,8 @@ async def automation_swarm_scan_apply(body: Optional[ApplyScanRequest] = None):
     mode = body.mode
     if mode is not None:
         mode = mode.strip().lower()
-        if mode not in ("swing", "day", "auto"):
-            raise HTTPException(status_code=400, detail="mode must be swing|day|auto")
+        if mode not in ("swing", "day", "hit", "auto"):
+            raise HTTPException(status_code=400, detail="mode must be swing|day|hit|auto")
     try:
         return apply_scan_to_recipe(
             top_n=body.top_n,
@@ -285,8 +291,8 @@ async def automation_risk_policy(mode: Optional[str] = None):
     """D2 — Read-only hard risk caps for the mode (display only, no override)."""
     if mode is not None:
         mode = mode.strip().lower()
-        if mode and mode not in ("swing", "day", "auto"):
-            raise HTTPException(status_code=400, detail="mode must be swing|day|auto")
+        if mode and mode not in ("swing", "day", "hit", "auto"):
+            raise HTTPException(status_code=400, detail="mode must be swing|day|hit|auto")
     try:
         return get_risk_policy(mode)
     except Exception as e:
@@ -459,3 +465,94 @@ async def automation_autoresearch_review(body: AutoResearchReviewRequest):
         raise HTTPException(
             status_code=500, detail=f"Review decision failed ({type(e).__name__})"
         ) from e
+
+
+# ── F5 — Ops HIT strip (trades today, turnover, cost-gate rejects, last pulse) ──
+
+
+@router.get("/automation/hit/ops")
+async def automation_hit_ops():
+    """F5 — Today's HIT strip. Never crashes without a pulse yet (blank fields).
+
+    HIT is High-frequency **Intraday Turnover** (paper; minutes-hours holds),
+    not true HFT — see docs/WAVE_F_HIT.md. This reads a persisted counter
+    file; it never opens a live WebSocket connection from this endpoint.
+    """
+    try:
+        ops = read_hit_ops()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"HIT ops unavailable ({type(e).__name__})"
+        ) from e
+    return {
+        **ops,
+        "paper_only": True,
+        "hit_execute_env_allows": hit_execute_env_allows(),
+        "not_true_hft": True,
+    }
+
+
+class HitPulseRequest(BaseModel):
+    tickers: Optional[List[str]] = Field(default=None, description="Optional tickers; default HIT universe")
+    execute_trades: bool = Field(
+        default=False,
+        description="Prefer false (analysis-only). Only takes effect if SWARM_HIT_EXECUTE is truthy.",
+    )
+    top_n: int = Field(default=10, ge=1, le=15)
+
+
+@router.post("/automation/hit/pulse")
+async def automation_hit_pulse(body: Optional[HitPulseRequest] = None):
+    """F3 — UI-facing HIT pulse trigger (no cron secret needed here).
+
+    Same dual-gated execute semantics as ``POST /cron/hit-pulse``: analysis-only
+    by default; execute only if ``SWARM_HIT_EXECUTE`` is truthy **and**
+    ``execute_trades=true`` is explicitly requested. Cadence for the cron path
+    is Scheduler-owned; this route exists for manual/UI-triggered pulses.
+    """
+    from app.backend.services.hit_service import run_hit_pulse
+
+    body = body or HitPulseRequest()
+    try:
+        return run_hit_pulse(
+            tickers=body.tickers,
+            execute_requested=bool(body.execute_trades),
+            top_n=body.top_n,
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"HIT pulse failed ({type(e).__name__})"
+        ) from e
+
+
+# ── F6 — HIT dry-run streak / exit checklist (mirrors A2/E1) ────────────────
+
+
+class HitStreakAckRequest(BaseModel):
+    by: Optional[str] = Field(default=None, description="Who is acking (James / Reviewer)")
+    note: Optional[str] = Field(default=None, description="Optional context for the ack")
+
+
+@router.get("/automation/hit-dry-run-streak")
+async def automation_hit_dry_run_streak():
+    """F6 — Weekday HIT streak + last would-fire/blocked/cost-gate summaries.
+
+    Display/record only — there is no field here (or write path) that flips
+    ``SWARM_HIT_EXECUTE``. That stays an Elestio-console-only decision.
+    """
+    return read_hit_dry_run_streak()
+
+
+@router.post("/automation/hit-dry-run-streak/ack")
+async def automation_hit_dry_run_streak_ack(body: Optional[HitStreakAckRequest] = None):
+    """F6 — Record a James/Reviewer ack. Never touches SWARM_HIT_EXECUTE."""
+    body = body or HitStreakAckRequest()
+    return record_hit_streak_ack(body.by, body.note)
+
+
+@router.post("/automation/hit-dry-run-streak/clear-ack")
+async def automation_hit_dry_run_streak_clear_ack():
+    """F6 — Clear a previously recorded ack (record only)."""
+    return clear_hit_streak_ack()

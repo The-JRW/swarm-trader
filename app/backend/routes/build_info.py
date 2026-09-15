@@ -66,5 +66,13 @@ async def build_info():
             "mode-auto-resolver",
             "empty-book-redeploy-assist",
             "autoresearch-review-queue",
+            # Wave F — HIT (High-frequency Intraday Turnover). Paper-only.
+            # NOT true HFT: no co-location, no LOB imbalance engine, no
+            # maker/taker rebates. See docs/WAVE_F_HIT.md.
+            "hit-mode",
+            "hit-cost-gate",
+            "hit-pulse-cron",
+            "hit-ops-strip",
+            "hit-dry-run-streak",
         ],
     }

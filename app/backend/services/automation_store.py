@@ -26,8 +26,8 @@ SCAN_HISTORY_FILE = "scan_history.jsonl"
 APPLY_RECIPE_MAX = 15
 SCAN_HISTORY_MAX = 20
 
-VALID_PRESETS = ("core", "value", "growth", "quant", "custom")
-VALID_MODES = ("swing", "day", "auto")
+VALID_PRESETS = ("core", "value", "growth", "quant", "hit", "custom")
+VALID_MODES = ("swing", "day", "hit", "auto")
 
 DEFAULT_RECIPE: Dict[str, Any] = {
     "tickers": ["NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "SPY"],

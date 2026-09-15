@@ -175,11 +175,27 @@ def _place_alpaca_order(ticker: str, action: str, qty: int, mode: str = None) ->
     )
     if resp.status_code in (200, 201):
         order = resp.json()
-        return {
+        result = {
             "success": True,
             "order_id": order.get("id"),
             "status": order.get("status"),
+            # F5 — fill-latency timestamps when Alpaca already returned them on
+            # the initial order response; left absent otherwise (never
+            # fabricated). Paper market orders on liquid names often fill
+            # near-instantly, so a one-shot refetch is a cheap best-effort.
+            "submitted_at": order.get("submitted_at"),
+            "filled_at": order.get("filled_at"),
         }
+        if not result["filled_at"] and result["order_id"]:
+            try:
+                refreshed = get_order(result["order_id"], mode)
+                if isinstance(refreshed, dict) and refreshed.get("id"):
+                    result["status"] = refreshed.get("status") or result["status"]
+                    result["submitted_at"] = refreshed.get("submitted_at") or result["submitted_at"]
+                    result["filled_at"] = refreshed.get("filled_at") or result["filled_at"]
+            except Exception:
+                pass  # best-effort only — never fabricate a timestamp
+        return result
     return {
         "success": False,
         "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}",

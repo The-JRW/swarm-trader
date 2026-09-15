@@ -79,6 +79,13 @@ _PRESET_ANALYST_IDS = {
         "sentiment_analyst",
         "news_sentiment_analyst",
     ],
+    # F4 — HIT preset: deterministic/fast signals ahead of heavier LLM research.
+    "hit": [
+        "technical_analyst",
+        "market_regime",
+        "autoresearch",
+        "sentiment_analyst",
+    ],
 }
 
 
@@ -199,8 +206,8 @@ async def cron_paper_run(
 
     # Recipe defaults when body omits fields
     mode = (body.mode or recipe.get("mode") or resolve_mode() or "swing").strip().lower()
-    if mode not in ("swing", "day", "auto"):
-        raise HTTPException(status_code=400, detail="mode must be swing, day, or auto")
+    if mode not in ("swing", "day", "hit", "auto"):
+        raise HTTPException(status_code=400, detail="mode must be swing, day, hit, or auto")
 
     tickers = body.tickers or recipe.get("tickers") or _default_cron_tickers()
     if body.strategy_ids is not None:
@@ -465,8 +472,8 @@ async def cron_swarm_scan(body: Optional[CronSwarmScanRequest] = None):
     mode = body.mode
     if mode is not None:
         mode = mode.strip().lower()
-        if mode not in ("swing", "day", "auto"):
-            raise HTTPException(status_code=400, detail="mode must be swing|day|auto")
+        if mode not in ("swing", "day", "hit", "auto"):
+            raise HTTPException(status_code=400, detail="mode must be swing|day|hit|auto")
 
     try:
         assert_paper_only()
@@ -533,4 +540,92 @@ async def cron_swarm_scan(body: Optional[CronSwarmScanRequest] = None):
         "notes": notes,
         "message": "scan-only" if not auto else "scan (+ optional apply/launch)",
     }
+
+
+class CronHitPulseRequest(BaseModel):
+    """F3 — HIT pulse. Analysis-only default; execute only if SWARM_HIT_EXECUTE
+    is truthy **and** this request explicitly asks for it (dual gate, same
+    pattern as B1/C4). Cadence is Scheduler/cron-owned — document only, never
+    hardcoded here.
+    """
+
+    tickers: Optional[List[str]] = Field(
+        default=None,
+        description="Optional tickers; default liquid mega-cap + SPY/QQQ (HIT universe)",
+    )
+    execute_trades: bool = Field(
+        default=False,
+        description="Prefer false (analysis-only). Only takes effect if SWARM_HIT_EXECUTE is truthy.",
+    )
+    top_n: int = Field(default=10, ge=1, le=15)
+
+    @field_validator("tickers")
+    @classmethod
+    def normalize_hit_tickers(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        cleaned: List[str] = []
+        for t in v:
+            if not t or not str(t).strip():
+                continue
+            sym = str(t).strip().upper()
+            if not sym.replace(".", "").isalnum():
+                raise ValueError(f"Invalid ticker: {t}")
+            if sym not in cleaned:
+                cleaned.append(sym)
+        if len(cleaned) > 15:
+            raise ValueError("max 15 tickers")
+        return cleaned or None
+
+
+@router.post(
+    "/cron/hit-pulse",
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def cron_hit_pulse(body: Optional[CronHitPulseRequest] = None):
+    """F3 — Secret-gated HIT pulse. Default scan-lite + analysis-only.
+
+    ``execute_trades`` is honored only when ``SWARM_HIT_EXECUTE`` is truthy
+    **and** this request sets it true (dual gate — never a single-sided
+    env flip). The F2 cost gate is mandatory on any HIT execute attempt.
+    Cadence (how often this fires) is owned by the external
+    Scheduler/routines/cron that calls this endpoint — nothing here
+    self-schedules. HIT ≠ true HFT: paper-only, no co-location, no LOB
+    imbalance modeling. See docs/WAVE_F_HIT.md.
+    """
+    from app.backend.services.hit_service import run_hit_pulse
+
+    body = body or CronHitPulseRequest()
+
+    if not has_alpaca_keys():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "FAIL_CLOSED: ALPACA_API_KEY and ALPACA_API_SECRET are not set. "
+                "Configure keys in Elestio env."
+            ),
+        )
+    try:
+        assert_paper_only()
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=f"FAIL_CLOSED: {e}") from e
+
+    if alpaca_trading_mode() == "live":
+        raise HTTPException(
+            status_code=403,
+            detail="FAIL_CLOSED: cron hit-pulse refuses ALPACA_TRADING_MODE=live",
+        )
+
+    try:
+        return run_hit_pulse(
+            tickers=body.tickers,
+            execute_requested=bool(body.execute_trades),
+            top_n=body.top_n,
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=f"FAIL_CLOSED: {e}") from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"HIT pulse failed ({type(e).__name__})"
+        ) from e
 
