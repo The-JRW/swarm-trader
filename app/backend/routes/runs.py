@@ -46,7 +46,7 @@ def _paper_mode_or_refuse():
     if not has_alpaca_keys():
         return False, None, "Server Alpaca keys not configured"
     glance_mode = resolve_mode()
-    if glance_mode == "auto" or glance_mode not in ("swing", "day"):
+    if glance_mode == "auto" or glance_mode not in ("swing", "day", "hit"):
         glance_mode = "swing"
     return True, glance_mode, None
 
@@ -119,8 +119,8 @@ async def start_paper_run(body: PaperRunRequest):
         )
 
     mode = (body.mode or resolve_mode() or "swing").strip().lower()
-    if mode not in ("swing", "day", "auto"):
-        raise HTTPException(status_code=400, detail="mode must be swing, day, or auto")
+    if mode not in ("swing", "day", "hit", "auto"):
+        raise HTTPException(status_code=400, detail="mode must be swing, day, hit, or auto")
 
     strategy_ids = body.strategy_ids or []
     instrument = (getattr(body, "instrument", None) or "stocks").strip().lower()
@@ -232,7 +232,7 @@ async def portfolio_glance():
 
         # Prefer resolved/swing mode so day-only missing keys do not ValueError
         glance_mode = resolve_mode()
-        if glance_mode == "auto" or glance_mode not in ("swing", "day"):
+        if glance_mode == "auto" or glance_mode not in ("swing", "day", "hit"):
             glance_mode = "swing"
 
         if not accounts_mod.get_all_accounts():
@@ -328,7 +328,7 @@ async def portfolio_orders(limit: int = Query(default=20, ge=1, le=50)):
         from src.alpaca_integration import get_open_orders
 
         glance_mode = resolve_mode()
-        if glance_mode == "auto" or glance_mode not in ("swing", "day"):
+        if glance_mode == "auto" or glance_mode not in ("swing", "day", "hit"):
             glance_mode = "swing"
 
         if not accounts_mod.get_all_accounts():

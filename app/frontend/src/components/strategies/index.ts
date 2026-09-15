@@ -8,3 +8,5 @@ export { DryRunStreakPanel } from './dry-run-streak-panel';
 export { SessionDigestPanel } from './session-digest-panel';
 export { RedeployBanner } from './redeploy-banner';
 export { AutoResearchReviewPanel } from './autoresearch-review-panel';
+export { HitOpsPanel } from './hit-ops-panel';
+export { HitDryRunStreakPanel } from './hit-dry-run-streak-panel';

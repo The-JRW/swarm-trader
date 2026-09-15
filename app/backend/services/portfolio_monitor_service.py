@@ -79,7 +79,7 @@ def run_portfolio_monitor(
     )
 
     resolved = (mode or resolve_mode() or "swing").strip().lower()
-    if resolved == "auto" or resolved not in ("swing", "day"):
+    if resolved == "auto" or resolved not in ("swing", "day", "hit"):
         resolved = "swing"
 
     mode_config = get_mode_config(resolved)
@@ -117,8 +117,9 @@ def run_portfolio_monitor(
     eod_flatten = False
     long_positions = [p for p in positions if float(p.get("qty") or 0) > 0]
 
-    # Explicit day flatten when requested (body flatten_day + day mode)
-    if flatten_day and resolved == "day" and long_positions:
+    # Explicit EOD flatten when requested (body flatten_day + a flatten_eod mode:
+    # "day" or "hit" — hit flattens earlier per its own flatten_by, see F1).
+    if flatten_day and resolved in ("day", "hit") and bool(mode_risk.get("flatten_eod")) and long_positions:
         eod_flatten = True
         logger.info(
             "Monitor: flatten_day requested (mode=day, dry_run=%s, positions=%d)",

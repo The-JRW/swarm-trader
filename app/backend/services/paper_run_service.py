@@ -193,8 +193,8 @@ def _try_live_portfolio(tickers: List[str], mode: str) -> dict:
             get_alpaca_positions,
         )
 
-        account = get_alpaca_account(mode if mode in ("swing", "day") else None)
-        positions = get_alpaca_positions(mode if mode in ("swing", "day") else None)
+        account = get_alpaca_account(mode if mode in ("swing", "day", "hit") else None)
+        positions = get_alpaca_positions(mode if mode in ("swing", "day", "hit") else None)
         return convert_to_portfolio(positions, account, tickers)
     except Exception as e:
         logger.warning("Paper run: could not load Alpaca portfolio (%s); using empty book", type(e).__name__)
@@ -226,6 +226,10 @@ def _sanitize_trade_result(row: Dict[str, Any]) -> Dict[str, Any]:
         "limit_price",
         "trail_percent",
         "side",
+        # F5 — fill-latency timestamps when Alpaca returns them; blank if missing
+        # (never fabricated). See app/backend/services/hit_ops_service.py.
+        "submitted_at",
+        "filled_at",
     )
     out = {k: row[k] for k in keep if k in row}
     # Truncate free-text fields
@@ -244,7 +248,7 @@ def _execute_paper_decisions(decisions: dict, mode: str) -> List[Dict[str, Any]]
         get_alpaca_positions,
     )
 
-    account_mode = mode if mode in ("swing", "day") else "swing"
+    account_mode = mode if mode in ("swing", "day", "hit") else "swing"
     try:
         account = get_alpaca_account(account_mode)
         positions = get_alpaca_positions(account_mode)
@@ -425,6 +429,8 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
         trade_results: List[Dict[str, Any]] = []
         executed = False
         execute_blocked_reason = None
+        cost_gate_rejects: List[Dict[str, Any]] = []
+        hit_gate_prices: Dict[str, float] = {}
 
         if want_execute:
             assert_paper_only()
@@ -438,12 +444,71 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
                     run_id,
                 )
             else:
-                trade_results = _execute_paper_decisions(decisions, mode)
+                decisions_to_execute = decisions
+                if mode == "hit":
+                    # F2 — cost/microstructure gate is MANDATORY before any HIT
+                    # execute. Fail-closed on gate error: never silently bypass
+                    # it — new entries are blocked, exits still pass through.
+                    try:
+                        from app.backend.services.cost_gate_service import (
+                            gate_hit_decisions_for_execute,
+                        )
+
+                        decisions_to_execute, cost_gate_rejects, hit_gate_prices = (
+                            gate_hit_decisions_for_execute(decisions, mode)
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Paper run %s: HIT cost gate error (%s) — fail-closed, "
+                            "blocking new entries this run",
+                            run_id,
+                            type(e).__name__,
+                        )
+                        cost_gate_rejects = [
+                            {
+                                "ticker": t,
+                                "action": str(d.get("action") or "").lower(),
+                                "qty": d.get("quantity") or 0,
+                                "rule": "cost_gate",
+                                "reason": (
+                                    f"HIT cost gate error ({type(e).__name__}) — "
+                                    "fail-closed, entry blocked"
+                                ),
+                            }
+                            for t, d in decisions.items()
+                            if isinstance(d, dict)
+                            and str(d.get("action") or "").lower() in ("buy", "short")
+                        ]
+                        decisions_to_execute = {
+                            t: (
+                                {**d, "action": "hold", "quantity": 0}
+                                if isinstance(d, dict)
+                                and str(d.get("action") or "").lower() in ("buy", "short")
+                                else d
+                            )
+                            for t, d in decisions.items()
+                        }
+
+                trade_results = _execute_paper_decisions(decisions_to_execute, mode)
+                for rej in cost_gate_rejects:
+                    trade_results.append(
+                        {
+                            "ticker": rej.get("ticker"),
+                            "action": rej.get("action"),
+                            "qty": rej.get("qty"),
+                            "success": False,
+                            "skipped": True,
+                            "dry_run": False,
+                            "rule": rej.get("rule") or "cost_gate",
+                            "reason": rej.get("reason"),
+                        }
+                    )
                 executed = True
                 logger.info(
-                    "Paper run %s executed %d trade result(s)",
+                    "Paper run %s executed %d trade result(s) (%d cost-gate reject(s))",
                     run_id,
                     len(trade_results),
+                    len(cost_gate_rejects),
                 )
 
         summary = {
@@ -469,6 +534,40 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
             write_session_digest(run_id=run_id, record=rec, summary=summary)
         except Exception as e:
             logger.warning("Session digest persist failed for %s (%s)", run_id, type(e).__name__)
+
+        # F5/F6 — HIT ops strip + dry-run streak. Every mode=="hit" run updates
+        # both, whether or not it actually executed (keeps "last pulse" honest).
+        if mode == "hit":
+            try:
+                from app.backend.services.hit_ops_service import record_hit_run
+
+                would_fire_count = action_counts.get("buy", 0) + action_counts.get("short", 0)
+                record_hit_run(
+                    run_id=run_id,
+                    execute_requested=want_execute,
+                    execute_effective=executed,
+                    would_fire_count=would_fire_count,
+                    trade_results=trade_results,
+                    cost_gate_rejects=cost_gate_rejects,
+                    prices=hit_gate_prices,
+                )
+            except Exception as e:
+                logger.warning("HIT ops persist failed for %s (%s)", run_id, type(e).__name__)
+            try:
+                from app.backend.services.hit_dry_run_streak_service import (
+                    record_weekday_hit_pulse_event,
+                )
+
+                record_weekday_hit_pulse_event(
+                    dry_run=not executed,
+                    had_error=False,
+                    summary=summary,
+                    cost_gate_reject_count=len(cost_gate_rejects),
+                )
+            except Exception as e:
+                logger.warning(
+                    "HIT dry-run streak persist failed for %s (%s)", run_id, type(e).__name__
+                )
 
         _update_run(
             run_id,
@@ -505,6 +604,16 @@ def execute_paper_run(run_id: str) -> Dict[str, Any]:
         err = f"{type(e).__name__}: {e}"
         logger.exception("Paper run %s failed: %s", run_id, type(e).__name__)
         _update_run(run_id, status="error", error=err, completed_at=_now_iso())
+        if (rec.get("mode") or "").lower() == "hit":
+            try:
+                from app.backend.services.hit_dry_run_streak_service import (
+                    record_weekday_hit_pulse_event,
+                )
+
+                # F6 — an unexpected error resets the HIT streak, matching A2.
+                record_weekday_hit_pulse_event(dry_run=True, had_error=True)
+            except Exception:
+                pass
 
     return get_run(run_id)  # type: ignore
 

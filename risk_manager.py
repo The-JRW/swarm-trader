@@ -443,7 +443,7 @@ def print_status(portfolio_state: dict, mode: str = None) -> None:
     print(f"    No-buy (-{risk['no_buy_if_down_pct']*100:.0f}%):  {'🔴 ACTIVE' if no_buy_cb else '🟢 OK'}")
     print(f"    Weekly (-{risk['weekly_loss_limit']*100:.0f}%): {'🔴 ACTIVE' if weekly_cb else '🟢 OK'}")
     print(f"    Cash   (>{risk['min_cash_pct']*100:.0f}%):   {'🟢 OK' if cash_ok else '🔴 LOW'}")
-    if mode == "day":
+    if risk.get("flatten_eod"):
         flatten_by = risk.get("flatten_by", "15:45")
         print(f"    Flatten EOD ({flatten_by} ET): enabled")
     print()
@@ -465,7 +465,7 @@ if __name__ == "__main__":
     parser.add_argument("--status", action="store_true", help="Show current risk status")
     parser.add_argument(
         "--mode",
-        choices=["swing", "day"],
+        choices=["swing", "day", "hit"],
         default=None,
         help="Trading mode (overrides TRADING_MODE env, default: swing)",
     )
